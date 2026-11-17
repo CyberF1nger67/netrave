@@ -28,7 +28,7 @@
     "@types/node": "^24.9.1",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.1",
-    "@vitejs/plugin-react": "^5.0.4",
+    "@vitejs/plugin-react": "^6.3.0",
     "js-yaml": "5.5.0",
     "jsdom": "^27.0.0",
     "tailwindcss": "^4.1.14",
