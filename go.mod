@@ -1,6 +1,8 @@
 module netrave
 
-go 1.26.0
+// Pin the patch release: the minimum version must include the standard library
+// security fixes that govulncheck reports for earlier go1.26.x releases.
+go 1.26.11
 
 require (
 	golang.org/x/crypto v0.58.0

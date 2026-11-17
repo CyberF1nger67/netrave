@@ -60,6 +60,15 @@ func TestSPAHandlerServesStaticFiles(t *testing.T) {
 	}
 }
 
+// The placeholder that keeps the embedded directory in the repository must never
+// be reachable, even when the embedded tree is missing everything else.
+func TestSPAHandlerHidesPlaceholderFile(t *testing.T) {
+	h := SPAHandler(fstest.MapFS{placeholder: {Data: nil}})
+	if rec := spaRequest(t, h, "/"+placeholder); rec.Code != http.StatusNotFound {
+		t.Fatalf("/%s: код %d, ожидался 404", placeholder, rec.Code)
+	}
+}
+
 func TestSPAHandlerDoesNotHideMissingAssetsOrAPI(t *testing.T) {
 	h := SPAHandler(spaTestFS())
 	for _, target := range []string{"/assets/missing.js", "/api/unknown", "/ws/unknown", "/img/missing.png"} {

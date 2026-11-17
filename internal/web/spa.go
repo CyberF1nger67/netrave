@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// placeholder is the file that keeps the embedded static directory in the
+// repository before the frontend is built. It is never exposed to clients.
+const placeholder = "frontend.txt"
+
 // SPAHandler serves embedded static files and returns index.html for client-side
 // routes. Thanks to this, direct opening and refreshing of /labs/<folder>/<lab>
 // does not lead to 404. API and WebSocket requests remain with their own handlers.
@@ -26,6 +30,10 @@ func SPAHandler(content fs.FS) http.Handler {
 		}
 
 		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name == placeholder {
+			http.NotFound(w, r)
+			return
+		}
 		if name != "" && name != "." {
 			if info, err := fs.Stat(content, name); err == nil && !info.IsDir() {
 				files.ServeHTTP(w, r)
