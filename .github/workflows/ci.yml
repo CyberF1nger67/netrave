@@ -46,7 +46,7 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: Upload embedded frontend
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-static
           path: internal/web/static

@@ -25,7 +25,7 @@ jobs:
       - run: npm run build
       # The built static files are no longer stored in the repository: the artifact is passed
       # from the frontend build job to the binary build job.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: frontend-static
           path: internal/web/static
@@ -63,7 +63,7 @@ jobs:
             -X netrave/internal/version.Commit=${GITHUB_SHA} \
             -X netrave/internal/version.Date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -o dist/netrave-linux-${{ matrix.goarch }}${GOARM:+v$GOARM} .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: netrave-linux-${{ matrix.goarch }}${{ matrix.goarm }}
           path: dist/*
