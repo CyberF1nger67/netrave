@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: aurora
+name: "Aurora"
+base: dark
+colors:
+  bg: "#051014"
+  bg-2: "#07191f"
+  panel: "#0a2129"
+  panel2: "#0e2c36"
+  panel3: "#133a46"
+  side: "#07191f"
+  btn: "#0e2c36"
+  line: "#164450"
+  line-2: "#21616f"
+  text: "#e6fbff"
+  muted: "#82aab4"
+  accent: "#22d3ee"
+  accent-2: "#a855f7"
+  on-accent: "#04141a"
+  ok: "#34d399"
+  bad: "#fb7185"
+  warn: "#fbbf24"

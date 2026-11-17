@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: sunset
+name: "Sunset"
+base: dark
+colors:
+  bg: "#1a0f14"
+  bg-2: "#220f19"
+  panel: "#2a1520"
+  panel2: "#36192a"
+  panel3: "#44213a"
+  side: "#220f19"
+  btn: "#36192a"
+  line: "#3d2232"
+  line-2: "#5a3049"
+  text: "#fde9ef"
+  muted: "#c49aaa"
+  accent: "#f97316"
+  accent-2: "#ec4899"
+  on-accent: "#1f0a05"
+  ok: "#34d399"
+  bad: "#fb7185"
+  warn: "#fbbf24"

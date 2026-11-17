@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 45" width="50" height="45">
+  <defs>
+    <linearGradient id="scr" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#000a3c"/>
+      <stop offset="0.55" stop-color="#0d2b7a"/>
+      <stop offset="1" stop-color="#3560c0"/>
+    </linearGradient>
+    <linearGradient id="neck" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7d8186"/>
+      <stop offset="0.5" stop-color="#c9ccd0"/>
+      <stop offset="1" stop-color="#7d8186"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="50" height="29" rx="0.8" fill="#a9abb0"/>
+  <rect x="1" y="1" width="48" height="27" fill="url(#scr)"/>
+  <g fill="#7fa6f0" fill-opacity="0.85">
+    <rect x="32.8" y="7.8" width="5.4" height="5.9"/>
+    <rect x="38.8" y="7.8" width="5.4" height="5.9"/>
+    <rect x="32.8" y="14.4" width="5.4" height="6.1"/>
+    <rect x="38.8" y="14.4" width="5.4" height="6.1"/>
+  </g>
+  <path d="M20,29 L30,29 L29.5,36 L20.5,36 Z" fill="url(#neck)"/>
+  <rect x="14" y="36" width="22" height="3.5" rx="1.7" fill="#c3c6ca"/>
+  <rect x="9.5" y="40.5" width="30" height="4.5" rx="0.8" fill="#a8acb1"/>
+  <path d="M11,42 H38 M11,43.5 H38" stroke="#4d5157" stroke-width="0.5" stroke-dasharray="1 0.6"/>
+  <ellipse cx="43" cy="42.8" rx="2" ry="2.6" fill="#b9bdc2" stroke="#8b9096" stroke-width="0.4"/>
+</svg>

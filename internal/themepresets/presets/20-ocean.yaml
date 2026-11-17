@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: ocean
+name: "Ocean"
+base: dark
+colors:
+  bg: "#07131f"
+  bg-2: "#0b1b2b"
+  panel: "#0f2236"
+  panel2: "#15304a"
+  panel3: "#1c3b59"
+  side: "#0b1b2b"
+  btn: "#15304a"
+  line: "#1d3750"
+  line-2: "#2b4d6b"
+  text: "#e3f1ff"
+  muted: "#7f9bb8"
+  accent: "#06b6d4"
+  accent-2: "#3b82f6"
+  on-accent: "#03121c"
+  ok: "#22c55e"
+  bad: "#f43f5e"
+  warn: "#f59e0b"

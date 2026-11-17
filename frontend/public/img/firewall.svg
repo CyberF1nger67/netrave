@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 52" width="64" height="52">
+<g transform="translate(4.25 -3.95)">
+<defs>
+  <linearGradient id="brick" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#5d97ad"/>
+    <stop offset="0.5" stop-color="#3b6e88"/>
+    <stop offset="1" stop-color="#2c5870"/>
+  </linearGradient>
+</defs>
+<polygon points="4.60,40.10 11.68,40.10 13.68,37.50 6.60,37.50" fill="#7fb3c7"/>
+<polygon points="11.68,40.10 13.68,37.50 13.68,44.80 11.68,47.40" fill="#24485b"/>
+<polygon points="4.60,40.10 11.68,40.10 11.68,47.40 4.60,47.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="12.88,40.10 24.56,40.10 26.56,37.50 14.88,37.50" fill="#7fb3c7"/>
+<polygon points="24.56,40.10 26.56,37.50 26.56,44.80 24.56,47.40" fill="#24485b"/>
+<polygon points="12.88,40.10 24.56,40.10 24.56,47.40 12.88,47.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="25.76,40.10 38.36,40.10 40.36,37.50 27.76,37.50" fill="#7fb3c7"/>
+<polygon points="38.36,40.10 40.36,37.50 40.36,44.80 38.36,47.40" fill="#24485b"/>
+<polygon points="25.76,40.10 38.36,40.10 38.36,47.40 25.76,47.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="39.56,40.10 49.40,40.10 51.40,37.50 41.56,37.50" fill="#7fb3c7"/>
+<polygon points="49.40,40.10 51.40,37.50 51.40,44.80 49.40,47.40" fill="#24485b"/>
+<polygon points="39.56,40.10 49.40,40.10 49.40,47.40 39.56,47.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="4.60,31.60 20.88,31.60 22.88,29.00 6.60,29.00" fill="#7fb3c7"/>
+<polygon points="20.88,31.60 22.88,29.00 22.88,36.30 20.88,38.90" fill="#24485b"/>
+<polygon points="4.60,31.60 20.88,31.60 20.88,38.90 4.60,38.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="22.08,31.60 33.76,31.60 35.76,29.00 24.08,29.00" fill="#7fb3c7"/>
+<polygon points="33.76,31.60 35.76,29.00 35.76,36.30 33.76,38.90" fill="#24485b"/>
+<polygon points="22.08,31.60 33.76,31.60 33.76,38.90 22.08,38.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="34.96,31.60 49.40,31.60 51.40,29.00 36.96,29.00" fill="#7fb3c7"/>
+<polygon points="49.40,31.60 51.40,29.00 51.40,36.30 49.40,38.90" fill="#24485b"/>
+<polygon points="34.96,31.60 49.40,31.60 49.40,38.90 34.96,38.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="4.60,23.10 12.60,23.10 14.60,20.50 6.60,20.50" fill="#7fb3c7"/>
+<polygon points="12.60,23.10 14.60,20.50 14.60,27.80 12.60,30.40" fill="#24485b"/>
+<polygon points="4.60,23.10 12.60,23.10 12.60,30.40 4.60,30.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="13.80,23.10 27.32,23.10 29.32,20.50 15.80,20.50" fill="#7fb3c7"/>
+<polygon points="27.32,23.10 29.32,20.50 29.32,27.80 27.32,30.40" fill="#24485b"/>
+<polygon points="13.80,23.10 27.32,23.10 27.32,30.40 13.80,30.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="28.52,23.10 40.20,23.10 42.20,20.50 30.52,20.50" fill="#7fb3c7"/>
+<polygon points="40.20,23.10 42.20,20.50 42.20,27.80 40.20,30.40" fill="#24485b"/>
+<polygon points="28.52,23.10 40.20,23.10 40.20,30.40 28.52,30.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="41.40,23.10 49.40,23.10 51.40,20.50 43.40,20.50" fill="#7fb3c7"/>
+<polygon points="49.40,23.10 51.40,20.50 51.40,27.80 49.40,30.40" fill="#24485b"/>
+<polygon points="41.40,23.10 49.40,23.10 49.40,30.40 41.40,30.40" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="4.60,14.60 19.96,14.60 21.96,12.00 6.60,12.00" fill="#7fb3c7"/>
+<polygon points="19.96,14.60 21.96,12.00 21.96,19.30 19.96,21.90" fill="#24485b"/>
+<polygon points="4.60,14.60 19.96,14.60 19.96,21.90 4.60,21.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="21.16,14.60 35.60,14.60 37.60,12.00 23.16,12.00" fill="#7fb3c7"/>
+<polygon points="35.60,14.60 37.60,12.00 37.60,19.30 35.60,21.90" fill="#24485b"/>
+<polygon points="21.16,14.60 35.60,14.60 35.60,21.90 21.16,21.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+<polygon points="36.80,14.60 49.40,14.60 51.40,12.00 38.80,12.00" fill="#7fb3c7"/>
+<polygon points="49.40,14.60 51.40,12.00 51.40,19.30 49.40,21.90" fill="#24485b"/>
+<polygon points="36.80,14.60 49.40,14.60 49.40,21.90 36.80,21.90" fill="url(#brick)" stroke="#a9c7d3" stroke-width="1.0" stroke-linejoin="round"/>
+</g>
+</svg>

@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: midnight
+name: "Midnight"
+base: dark
+colors:
+  bg: "#060b17"
+  bg-2: "#0a1223"
+  panel: "#0d1830"
+  panel2: "#12203f"
+  panel3: "#182b52"
+  side: "#0a1223"
+  btn: "#12203f"
+  line: "#1d3158"
+  line-2: "#2b4779"
+  text: "#e8f1ff"
+  muted: "#8fa6c9"
+  accent: "#818cf8"
+  accent-2: "#22d3ee"
+  on-accent: "#050b16"
+  ok: "#2dd4bf"
+  bad: "#fb7185"
+  warn: "#fbbf24"

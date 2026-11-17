@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: graphite
+name: "Graphite"
+base: dark
+colors:
+  bg: "#101113"
+  bg-2: "#17181b"
+  panel: "#1c1d21"
+  panel2: "#26282d"
+  panel3: "#303238"
+  side: "#17181b"
+  btn: "#26282d"
+  line: "#2c2e34"
+  line-2: "#44474f"
+  text: "#eceef2"
+  muted: "#9095a0"
+  accent: "#e5e7eb"
+  accent-2: "#9ca3af"
+  on-accent: "#111214"
+  ok: "#4ade80"
+  bad: "#f87171"
+  warn: "#fbbf24"

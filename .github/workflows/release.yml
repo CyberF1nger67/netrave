@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Build release archives
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          mkdir -p release
+          for target in amd64; do
+            export GOOS=linux GOARCH=$target
+            export GOARM=""
+            suffix="$target"
+            go build -trimpath -ldflags "-s -w \
+              -X netrave/internal/version.Version=$VERSION \
+              -X netrave/internal/version.Commit=$COMMIT \
+              -X netrave/internal/version.Date=$DATE" \
+              -o "release/netrave-linux-$suffix" .
+            stage=$(mktemp -d)
+            cp "release/netrave-linux-$suffix" "$stage/netrave"
+            cp README.md README.ru.md LICENSE THIRD_PARTY_LICENSES.md "$stage/"
+            mkdir -p "$stage/configs"
+            cp configs/config.example.yaml "$stage/configs/"
+            tar -czf "release/netrave-$VERSION-linux-$suffix.tar.gz" -C "$stage" .
+            rm -rf "$stage"
+          done
+          (cd release && sha256sum *.tar.gz > SHA256SUMS)
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/SHA256SUMS
+          generate_release_notes: true

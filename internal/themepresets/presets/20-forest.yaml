@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: forest
+name: "Forest"
+base: dark
+colors:
+  bg: "#0b1410"
+  bg-2: "#0f1d17"
+  panel: "#132820"
+  panel2: "#1a3429"
+  panel3: "#22422f"
+  side: "#0f1d17"
+  btn: "#1a3429"
+  line: "#22392e"
+  line-2: "#34553f"
+  text: "#e6f2e9"
+  muted: "#8aa595"
+  accent: "#22c55e"
+  accent-2: "#84cc16"
+  on-accent: "#04150a"
+  ok: "#4ade80"
+  bad: "#f87171"
+  warn: "#eab308"

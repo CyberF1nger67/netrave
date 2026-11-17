@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: mint
+name: "Mint"
+base: light
+colors:
+  bg: "#f0faf6"
+  bg-2: "#f8fdfb"
+  panel: "#ffffff"
+  panel2: "#e8f6f0"
+  panel3: "#d6efe4"
+  side: "#ffffff"
+  btn: "#e8f6f0"
+  line: "#d7ebe2"
+  line-2: "#b5d9c8"
+  text: "#0f2a1f"
+  muted: "#5b7a6c"
+  accent: "#0d9488"
+  accent-2: "#10b981"
+  on-accent: "#ffffff"
+  ok: "#15803d"
+  bad: "#dc2626"
+  warn: "#b45309"

@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: lime
+name: "Lime"
+base: light
+colors:
+  bg: "#f4fbf0"
+  bg-2: "#fafff7"
+  panel: "#ffffff"
+  panel2: "#eaf6e3"
+  panel3: "#d9eed0"
+  side: "#ffffff"
+  btn: "#eaf6e3"
+  line: "#d2e7c5"
+  line-2: "#b5d6a3"
+  text: "#17280f"
+  muted: "#668055"
+  accent: "#65a30d"
+  accent-2: "#14b8a6"
+  on-accent: "#ffffff"
+  ok: "#15803d"
+  bad: "#dc2626"
+  warn: "#d97706"

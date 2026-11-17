@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: cyber
+name: "Cyber"
+base: dark
+colors:
+  bg: "#0b0a12"
+  bg-2: "#12101c"
+  panel: "#181523"
+  panel2: "#221d31"
+  panel3: "#2e2742"
+  side: "#12101c"
+  btn: "#221d31"
+  line: "#37304d"
+  line-2: "#4f4570"
+  text: "#f7f4ff"
+  muted: "#a89fc4"
+  accent: "#f43f5e"
+  accent-2: "#facc15"
+  on-accent: "#1a0810"
+  ok: "#22c55e"
+  bad: "#ef4444"
+  warn: "#f59e0b"

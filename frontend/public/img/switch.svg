@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+<g transform="translate(-1.00 -2.00)">
+
+  <polygon points="6,28 16,20 60,20 50,28" fill="#4a7b93" stroke="#a9c7d3" stroke-width="0.6"/>
+  <polygon points="6,28 50,28 50,48 6,48" fill="#3b6e88" stroke="#a9c7d3" stroke-width="0.6"/>
+  <polygon points="50,28 60,20 60,40 50,48" fill="#2f5a71"/>
+  <line x1="20" y1="24" x2="44" y2="24" stroke="#ffffff" stroke-width="1.6"/>
+  <polygon points="20,24 24.5,21.6 24.5,26.4" fill="#ffffff"/>
+  <polygon points="44,24 39.5,21.6 39.5,26.4" fill="#ffffff"/>
+  <rect x="10" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/><rect x="16" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/><rect x="22" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/><rect x="28" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/><rect x="34" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/><rect x="40" y="34" width="4" height="4" fill="#2e5a70" stroke="#a9c7d3" stroke-width="0.5"/>
+  <rect x="10" y="41" width="32" height="2" fill="#a9c7d3" opacity="0.6"/>
+</g>
+</svg>

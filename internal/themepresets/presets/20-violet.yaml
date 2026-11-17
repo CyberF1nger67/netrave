@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: violet
+name: "Violet"
+base: dark
+colors:
+  bg: "#0d0716"
+  bg-2: "#150b22"
+  panel: "#1b0f2d"
+  panel2: "#26153d"
+  panel3: "#341d51"
+  side: "#150b22"
+  btn: "#26153d"
+  line: "#3d2360"
+  line-2: "#563584"
+  text: "#f6edff"
+  muted: "#b39ad1"
+  accent: "#8b5cf6"
+  accent-2: "#ec4899"
+  on-accent: "#12051f"
+  ok: "#34d399"
+  bad: "#fb7185"
+  warn: "#fbbf24"

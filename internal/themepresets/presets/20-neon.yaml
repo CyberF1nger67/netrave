@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: neon
+name: "Neon"
+base: dark
+colors:
+  bg: "#08050f"
+  bg-2: "#0e081a"
+  panel: "#130b23"
+  panel2: "#1a1030"
+  panel3: "#241641"
+  side: "#0e081a"
+  btn: "#1a1030"
+  line: "#2b1a4d"
+  line-2: "#3f2870"
+  text: "#f6ecff"
+  muted: "#a58cc4"
+  accent: "#f472b6"
+  accent-2: "#22d3ee"
+  on-accent: "#14061f"
+  ok: "#4ade80"
+  bad: "#fb7185"
+  warn: "#facc15"

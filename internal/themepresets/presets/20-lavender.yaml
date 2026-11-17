@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: lavender
+name: "Lavender"
+base: light
+colors:
+  bg: "#f6f4fc"
+  bg-2: "#fbfaff"
+  panel: "#ffffff"
+  panel2: "#efeafa"
+  panel3: "#e4dcf5"
+  side: "#ffffff"
+  btn: "#efeafa"
+  line: "#e2dbf0"
+  line-2: "#c9bde0"
+  text: "#1f1736"
+  muted: "#6e6287"
+  accent: "#7c3aed"
+  accent-2: "#a855f7"
+  on-accent: "#ffffff"
+  ok: "#16a34a"
+  bad: "#dc2626"
+  warn: "#d97706"

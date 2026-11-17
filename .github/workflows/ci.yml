@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Upload embedded frontend
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static
+          include-hidden-files: true
+          if-no-files-found: error
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-static
+          path: internal/web/static
+      - name: Build server
+        run: go build -o netrave .
+      - name: Start server and run smoke checks
+        run: |
+          ./netrave serve -addr 127.0.0.1:18080 -data "$RUNNER_TEMP/netrave-data" > "$RUNNER_TEMP/netrave.log" 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/ >/dev/null && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/ | grep -q NetRave
+          curl -fsS http://127.0.0.1:18080/console.html | grep -q console
+          kill %1

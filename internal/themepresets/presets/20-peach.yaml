@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: peach
+name: "Peach"
+base: light
+colors:
+  bg: "#fff7f2"
+  bg-2: "#fffbf8"
+  panel: "#ffffff"
+  panel2: "#fdefe7"
+  panel3: "#f9ddcf"
+  side: "#ffffff"
+  btn: "#fdefe7"
+  line: "#f2d5c6"
+  line-2: "#e5b8a3"
+  text: "#32160d"
+  muted: "#916b5b"
+  accent: "#f97316"
+  accent-2: "#ec4899"
+  on-accent: "#ffffff"
+  ok: "#16a34a"
+  bad: "#dc2626"
+  warn: "#b45309"

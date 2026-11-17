@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: ember
+name: "Ember"
+base: dark
+colors:
+  bg: "#120a08"
+  bg-2: "#1a0e0a"
+  panel: "#22120d"
+  panel2: "#2e1912"
+  panel3: "#3d2118"
+  side: "#1a0e0a"
+  btn: "#2e1912"
+  line: "#47271b"
+  line-2: "#633a28"
+  text: "#fff0e8"
+  muted: "#c49a86"
+  accent: "#f97316"
+  accent-2: "#ef4444"
+  on-accent: "#1a0803"
+  ok: "#4ade80"
+  bad: "#f43f5e"
+  warn: "#fbbf24"

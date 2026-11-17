@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: candy
+name: "Candy"
+base: light
+colors:
+  bg: "#fff5fb"
+  bg-2: "#fff9fd"
+  panel: "#ffffff"
+  panel2: "#fbeef8"
+  panel3: "#f6dff0"
+  side: "#ffffff"
+  btn: "#fbeef8"
+  line: "#efd3e6"
+  line-2: "#dfb6d1"
+  text: "#2a1024"
+  muted: "#866078"
+  accent: "#ec4899"
+  accent-2: "#8b5cf6"
+  on-accent: "#ffffff"
+  ok: "#16a34a"
+  bad: "#dc2626"
+  warn: "#d97706"

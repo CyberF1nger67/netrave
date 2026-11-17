@@ -1,0 +1,22 @@
+# Default theme preset. Colors use the CSS variable names of the UI.
+id: sky
+name: "Sky"
+base: light
+colors:
+  bg: "#f2f9ff"
+  bg-2: "#f9fcff"
+  panel: "#ffffff"
+  panel2: "#eaf4ff"
+  panel3: "#d9ebff"
+  side: "#ffffff"
+  btn: "#eaf4ff"
+  line: "#d4e5f7"
+  line-2: "#b4d2ee"
+  text: "#0b1f33"
+  muted: "#5f7d99"
+  accent: "#0ea5e9"
+  accent-2: "#6366f1"
+  on-accent: "#ffffff"
+  ok: "#16a34a"
+  bad: "#dc2626"
+  warn: "#d97706"

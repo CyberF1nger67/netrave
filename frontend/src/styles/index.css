@@ -1,0 +1,499 @@
+@import "tailwindcss";
+
+/* Theme palette. Values change at runtime (light theme, presets,
+      custom themes), so they remain CSS variables, and Tailwind
+      receives them via @theme. */
+:root {
+  --bg: #0a0f16;
+  --bg-2: #0e1520;
+  --panel: #121a25;
+  --panel2: #18222f;
+  --panel3: #202c3c;
+  --line: #22303f;
+  --line-2: #2e3e52;
+  --text: #e7edf5;
+  --muted: #8b99ad;
+  --accent: #6366f1;
+  --accent-2: #3b82f6;
+  --accent-soft: rgba(99, 102, 241, .16);
+  --ok: #22c55e;
+  --bad: #f25f5c;
+  --warn: #f5a524;
+  --on-accent: #fff;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 30px rgba(0, 0, 0, .28);
+  /* Shadow of the machine plate on the diagram: noticeable on light and dark backgrounds, but does not clash with the grid. */
+  --node-shadow: rgba(0, 0, 0, .45);
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --bg: #f3f6fb;
+  --bg-2: #f7f9fd;
+  --panel: #fff;
+  --panel2: #f4f7fc;
+  --panel3: #e9eef7;
+  --line: #e0e6ef;
+  --line-2: #cbd5e3;
+  --text: #0f1a2b;
+  --muted: #667489;
+  --accent: #4f46e5;
+  --accent-2: #2563eb;
+  --accent-soft: rgba(79, 70, 229, .10);
+  --ok: #16a34a;
+  --bad: #dc2626;
+  --warn: #d97706;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 10px 28px rgba(15, 23, 42, .08);
+  --node-shadow: rgba(15, 23, 42, .18);
+  --on-accent: #fff;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-panel: var(--panel);
+  --color-panel2: var(--panel2);
+  --color-panel3: var(--panel3);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-ok: var(--ok);
+  --color-bad: var(--bad);
+  --color-warn: var(--warn);
+  --color-on-accent: var(--on-accent, #fff);
+  --font-sans: Inter, "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --radius-app: var(--radius);
+  --radius-app-sm: var(--radius-sm);
+  --shadow-app: var(--shadow);
+  --ease-app: var(--ease);
+  --animate-page-in: pageIn .42s var(--ease) both;
+  --animate-fade-in: fadeIn .2s both;
+  --animate-modal-in: modalIn .3s var(--ease) both;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: var(--accent-soft);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  h2 {
+    margin: 0 0 20px;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+  }
+
+  h3 {
+    letter-spacing: -.005em;
+  }
+
+  a {
+    color: var(--accent);
+  }
+
+  button,
+  a.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 34px;
+    padding: 7px 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--btn, var(--panel2));
+    color: inherit;
+    font: inherit;
+    line-height: 1.2;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background .18s var(--ease), border-color .18s var(--ease), color .18s, box-shadow .18s, transform .12s var(--ease);
+  }
+
+  button:hover:not(:disabled),
+  a.btn:hover {
+    border-color: var(--line-2);
+    background: var(--panel3);
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(1px) scale(.99);
+  }
+
+  button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  input,
+  select,
+  textarea {
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 11px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--bg-2);
+    color: inherit;
+    font: inherit;
+    transition: border-color .18s, box-shadow .18s, background .18s;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: auto;
+    min-height: auto;
+    accent-color: var(--accent);
+  }
+
+  /* Switch: the same checkbox, but drawn as a modern slider. */
+  .app-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    margin: 0;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 400;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .app-switch input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .app-switch-track {
+    position: relative;
+    display: inline-block;
+    flex: none;
+    width: 34px;
+    height: 20px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    background: var(--panel3);
+    transition: background .18s var(--ease), border-color .18s var(--ease), box-shadow .18s var(--ease);
+  }
+
+  .app-switch-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background: var(--muted);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+    transition: transform .18s var(--ease), background .18s var(--ease);
+  }
+
+  .app-switch input:checked + .app-switch-track {
+    border-color: transparent;
+    background: linear-gradient(to bottom right, var(--accent), var(--accent-2));
+  }
+
+  .app-switch input:checked + .app-switch-track .app-switch-knob {
+    transform: translateX(14px);
+    background: #fff;
+  }
+
+  .app-switch input:focus-visible + .app-switch-track {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .app-switch-disabled,
+  .app-switch:has(input:disabled) {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  .app-switch-label {
+    min-width: 0;
+    line-height: 1.35;
+  }
+
+  /* Circular checkbox: a circle with a check, the same checkbox underneath. */
+  .app-round-check {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    margin: 0;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .app-round-check input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .app-round-check-box {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border: 1.5px solid var(--line-2);
+    border-radius: 999px;
+    background: var(--bg-2);
+    color: transparent;
+    transition: background .16s var(--ease), border-color .16s var(--ease), color .16s var(--ease), box-shadow .16s var(--ease);
+  }
+
+  .app-round-check:hover .app-round-check-box {
+    border-color: var(--accent);
+  }
+
+  .app-round-check input:checked + .app-round-check-box,
+  .app-round-check input[aria-checked="mixed"] + .app-round-check-box {
+    border-color: transparent;
+    background: linear-gradient(to bottom right, var(--accent), var(--accent-2));
+    color: #fff;
+  }
+
+  .app-round-check input:focus-visible + .app-round-check-box {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .app-round-check-disabled,
+  .app-round-check:has(input:disabled) {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--muted);
+    opacity: .7;
+  }
+
+  input:hover,
+  select:hover,
+  textarea:hover {
+    border-color: var(--line-2);
+  }
+
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+    background: var(--bg);
+  }
+
+  /* Dropdowns inherit the theme palette instead of the browser's system look. */
+  select {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 34px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%238b99ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px 8px;
+    cursor: pointer;
+  }
+
+  select.app-select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%238b99ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px 8px;
+  }
+
+  select:focus {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%238b99ad' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 12px 8px;
+  }
+
+  select:disabled {
+    cursor: not-allowed;
+  }
+
+  select option,
+  select optgroup {
+    background-color: var(--bg-2);
+    color: var(--text);
+  }
+
+  /* Native lists that remain in the markup are also themed. */
+  select,
+  optgroup {
+    color-scheme: inherit;
+  }
+
+  select option,
+  select optgroup,
+  optgroup option {
+    background-color: var(--bg-2);
+    color: var(--text);
+  }
+
+  select option:checked,
+  select option:hover {
+    background-color: var(--panel3);
+    color: var(--text);
+  }
+
+  label {
+    display: block;
+    margin: 12px 0 6px;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 500;
+  }
+
+  textarea {
+    resize: vertical;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+
+  th,
+  td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    vertical-align: middle;
+  }
+
+  th {
+    background: transparent;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  tbody tr {
+    transition: background .15s;
+  }
+
+  tbody tr:hover td {
+    background: var(--panel2);
+    background: color-mix(in srgb, var(--panel2) 70%, transparent);
+  }
+
+  tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  @media (max-width: 640px) {
+    h2 {
+      font-size: 19px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: .01ms !important;
+      transition-duration: .01ms !important;
+    }
+  }
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(12px) scale(.97); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes bell-ring {
+  0%, 80%, 100% { transform: rotate(0); }
+  85% { transform: rotate(-12deg); }
+  90% { transform: rotate(10deg); }
+  95% { transform: rotate(-6deg); }
+}
+
+@keyframes qlPulse {
+  0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, .55); }
+  70% { box-shadow: 0 0 0 7px rgba(34, 197, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+}
+
+@keyframes rlPulse {
+  0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, .55); box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  70%, 100% { box-shadow: 0 0 0 8px transparent; }
+}
+
+@keyframes np-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+@keyframes term-caret {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
+}
