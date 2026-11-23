@@ -28,6 +28,6 @@ func TestCategoryFor(t *testing.T) {
 
 func TestValidCategory(t *testing.T) {
 	if !ValidCategory("firewall") || ValidCategory("unknown") || ValidCategory("") {
-		t.Fatal("ValidCategory: неверный результат")
+		t.Fatal("ValidCategory: wrong result")
 	}
 }

@@ -25,6 +25,10 @@ export const systemRoutes: RouteObject[] = [
     children: [{ path: paths.users, lazy: () => import('../../features/users/UsersPage').then((m) => ({ Component: m.UsersPage })) }],
   },
   {
+    element: <RequirePage page={PAGES.messages} />,
+    children: [{ path: paths.messages, lazy: () => import('../../features/messages/MessagesPage').then((m) => ({ Component: m.MessagesPage })) }],
+  },
+  {
     element: <RequirePage page={PAGES.roles} />,
     children: [{ path: paths.roles, lazy: () => import('../../features/roles/RolesPage').then((m) => ({ Component: m.RolesPage })) }],
   },

@@ -150,7 +150,7 @@ function RangeField({ label, hint, min, max, value, fallback, onChange }: RangeF
   );
 }
 
-export interface QualityControlProps {
+interface QualityControlProps {
   rid: number;
   view: VNCView;
 }

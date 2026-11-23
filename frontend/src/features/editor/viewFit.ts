@@ -12,8 +12,8 @@ const FIT_PADDING = 32;
 
 /** Machine icon edge in world units: the editor keeps icons square and proportional. */
 export const BASE_ICON_SIZE = 56;
-export const MIN_ICON_SIZE = 24;
-export const MAX_ICON_SIZE = 256;
+const MIN_ICON_SIZE = 24;
+const MAX_ICON_SIZE = 256;
 
 /** Clamps a stored or requested icon size to the supported range. */
 export function clampIconSize(value: unknown): number {

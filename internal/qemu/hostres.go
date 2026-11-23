@@ -81,7 +81,7 @@ func FindQemuImg(qemuPath string) (string, error) {
 			return c, nil
 		}
 	}
-	return "", errors.New("qemu-img не найден (установите qemu-utils)")
+	return "", errors.New("qemu-img not found (install qemu-utils)")
 }
 
 func pidAlive(pid int) bool {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 
-export interface DropdownOption {
+interface DropdownOption {
   value: string;
   label: ReactNode;
   disabled?: boolean;

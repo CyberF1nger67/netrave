@@ -18,60 +18,60 @@ export function FolderNameDialog({ title, initial = '', onSave, onClose }: { tit
 export function FolderSelectDialog({ title, folders, value, exclude, confirmLabel, onSave, onClose }: {
   title: string;
   folders: LabFolder[];
-  value: number | null;
-  exclude?: Set<number>;
+  value: string | null;
+  exclude?: Set<string>;
   confirmLabel?: string;
-  onSave: (folderId: number | null) => Promise<void>;
+  onSave: (folderPath: string | null) => Promise<void>;
   onClose: () => void;
 }) {
-  const [selected, setSelected] = useState(String(value ?? 0));
-  const kids = new Map<number, LabFolder[]>();
+  const [selected, setSelected] = useState(value ?? '');
+  const kids = new Map<string, LabFolder[]>();
   for (const folder of folders) {
-    const key = folder.parent_id ?? 0;
+    const key = folder.parent;
     kids.set(key, [...(kids.get(key) ?? []), folder]);
   }
   for (const list of kids.values()) list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   const rows: Array<{ folder: LabFolder; depth: number }> = [];
-  const walk = (parent: number, depth: number) => {
+  const walk = (parent: string, depth: number) => {
     for (const folder of kids.get(parent) ?? []) {
-      rows.push({ folder, depth }); walk(folder.id, depth + 1);
+      rows.push({ folder, depth }); walk(folder.path, depth + 1);
     }
   };
-  walk(0, 0);
+  walk('', 0);
   return (
     <Modal title={title} onClose={onClose} actions={[
       { label: t('Cancel'), onClick: onClose },
-      { label: confirmLabel ?? t('Move folder'), primary: true, onClick: async () => { await onSave(Number(selected) || null); onClose(); } },
+      { label: confirmLabel ?? t('Move folder'), primary: true, onClick: async () => { await onSave(selected || null); onClose(); } },
     ]}>
       <select value={selected} onChange={(event) => setSelected(event.target.value)}>
-        <option value="0">{t('Root (no folder)')}</option>
-        {rows.filter(({ folder }) => !exclude?.has(folder.id)).map(({ folder, depth }) => (
-          <option key={folder.id} value={folder.id}>{'\u00a0\u00a0\u00a0'.repeat(depth) + (depth ? '↳ ' : '') + folder.name}</option>
+        <option value="">{t('Root (no folder)')}</option>
+        {rows.filter(({ folder }) => !exclude?.has(folder.path)).map(({ folder, depth }) => (
+          <option key={folder.path} value={folder.path}>{'\u00a0\u00a0\u00a0'.repeat(depth) + (depth ? '↳ ' : '') + folder.name}</option>
         ))}
       </select>
     </Modal>
   );
 }
 
-export function subtreeIds(folders: LabFolder[], id: number): Set<number> {
-  const ids = new Set<number>([id]);
+export function subtreeIds(folders: LabFolder[], path: string): Set<string> {
+  const ids = new Set<string>([path]);
   let grew = true;
   while (grew) {
     grew = false;
     for (const folder of folders) {
-      if (folder.parent_id && ids.has(folder.parent_id) && !ids.has(folder.id)) { ids.add(folder.id); grew = true; }
+      if (folder.parent && ids.has(folder.parent) && !ids.has(folder.path)) { ids.add(folder.path); grew = true; }
     }
   }
   return ids;
 }
 
-export function folderPath(folders: LabFolder[], id: number): LabFolder[] {
-  const byId = new Map(folders.map((folder) => [folder.id, folder]));
-  const path: LabFolder[] = [];
-  let current = byId.get(id);
+export function folderPath(folders: LabFolder[], path: string): LabFolder[] {
+  const byPath = new Map(folders.map((folder) => [folder.path, folder]));
+  const out: LabFolder[] = [];
+  let current = byPath.get(path);
   while (current) {
-    path.unshift(current);
-    current = current.parent_id ? byId.get(current.parent_id) : undefined;
+    out.unshift(current);
+    current = current.parent ? byPath.get(current.parent) : undefined;
   }
-  return path;
+  return out;
 }

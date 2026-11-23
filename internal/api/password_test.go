@@ -14,10 +14,11 @@ import (
 	"netrave/internal/access"
 	"netrave/internal/auth"
 	"netrave/internal/database"
+	"netrave/internal/names"
 )
 
 // Changing the password via "Account": the server accepts the `new` field and passwords
-// longer than eight characters, including Cyrillic.
+// of Latin letters, digits and symbols (no spaces) with eight or more characters.
 func TestChangeOwnPassword(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "password.db"))
 	if err != nil {
@@ -55,12 +56,12 @@ func TestChangeOwnPassword(t *testing.T) {
 	}
 
 	if rec := change(oldPassword, "short"); rec.Code != http.StatusBadRequest {
-		t.Fatalf("короткий пароль принят: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("short password accepted: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
-	const newPassword = "новый-надёжный-пароль-2026"
+	const newPassword = "novy-nadezhny-parol-2026"
 	if rec := change(oldPassword, newPassword); rec.Code != http.StatusOK {
-		t.Fatalf("смена пароля: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("password change: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	_, stored, err := as.FindByUsername("alice")
@@ -68,14 +69,14 @@ func TestChangeOwnPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !auth.VerifyPassword(newPassword, stored) {
-		t.Fatal("новый пароль не сохранился")
+		t.Fatal("new password was not saved")
 	}
 	if auth.VerifyPassword(oldPassword, stored) {
-		t.Fatal("старый пароль продолжает работать")
+		t.Fatal("old password still works")
 	}
 }
 
-func TestValidPasswordCountsCharacters(t *testing.T) {
+func TestPasswordRulesLengthAndCharacters(t *testing.T) {
 	cases := []struct {
 		name string
 		pw   string
@@ -83,14 +84,16 @@ func TestValidPasswordCountsCharacters(t *testing.T) {
 	}{
 		{"7 chars", "1234567", false},
 		{"8 chars", "12345678", true},
-		{"128 chars", strings.Repeat("a", 128), true},
-		{"129 chars", strings.Repeat("a", 129), false},
-		{"128 cyrillic chars", strings.Repeat("я", 128), true},
-		{"129 cyrillic chars", strings.Repeat("я", 129), false},
+		{"256 chars", strings.Repeat("a", 256), true},
+		{"257 chars", strings.Repeat("a", 257), false},
+		{"cyrillic", strings.Repeat("я", 8), false},
+		{"space inside", "pass word1", false},
+		{"symbol", "pass!word1", true},
+		{"tab inside", "pass\tword1", false},
 	}
 	for _, tc := range cases {
-		if got := validPassword(tc.pw); got != tc.want {
-			t.Errorf("%s: validPassword = %v, want %v", tc.name, got, tc.want)
+		if got := names.ValidPassword(tc.pw); got != tc.want {
+			t.Errorf("%s: ValidPassword = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }
@@ -129,7 +132,7 @@ func assignTestRole(t *testing.T, db *database.DB, userID int64, name string) {
 func grantTestRolePerm(t *testing.T, db *database.DB, role, perm string) {
 	t.Helper()
 	if _, err := db.Exec(`INSERT OR IGNORE INTO permissions(key,title,group_key,group_title,sort)
-		VALUES(?,?,'users','Пользователи',0)`, perm, perm); err != nil {
+		VALUES(?,?,'users','Users',0)`, perm, perm); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO role_permissions(role_id,permission)
@@ -167,21 +170,21 @@ func TestChangePasswordRespectsRolePermission(t *testing.T) {
 	assignTestRole(t, db, aliceID, "Students")
 
 	if rec := changeTestPassword(mux, aliceTok, aliceCSRF, "old-secret-123", "new-secret-123"); rec.Code != http.StatusForbidden {
-		t.Fatalf("роль без users.password: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("role without users.password: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	grantTestRolePerm(t, db, "Students", "users.password")
 	if rec := changeTestPassword(mux, aliceTok, aliceCSRF, "old-secret-123", "new-secret-123"); rec.Code != http.StatusOK {
-		t.Fatalf("роль с users.password: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("role with users.password: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	_, bobTok, bobCSRF := addTestUser(t, db, as, "bob", "user")
 	if rec := changeTestPassword(mux, bobTok, bobCSRF, "old-secret-123", "new-secret-123"); rec.Code != http.StatusOK {
-		t.Fatalf("пользователь без ролей: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("user without roles: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	_, adminTok, adminCSRF := addTestUser(t, db, as, "root", "admin")
 	if rec := changeTestPassword(mux, adminTok, adminCSRF, "old-secret-123", "new-secret-123"); rec.Code != http.StatusOK {
-		t.Fatalf("администратор: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("administrator: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 }

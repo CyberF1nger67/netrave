@@ -51,17 +51,17 @@ func (q VNCQuality) Validate() error {
 	q = q.Normalized()
 	switch {
 	case !vncResolutions[q.Resolution]:
-		return errors.New("недопустимое разрешение VNC")
+		return errors.New("Invalid VNC resolution")
 	case !inRange(q.Bitrate, 1, 100):
-		return errors.New("битрейт VNC должен быть от 1 до 100 Мбит/с")
+		return errors.New("VNC bitrate must be from 1 to 100 Mbit/s")
 	case !inRange(q.Quality, 1, 9):
-		return errors.New("качество JPEG VNC должно быть от 1 до 9")
+		return errors.New("VNC JPEG quality must be from 1 to 9")
 	case !inRange(q.Compression, 1, 9):
-		return errors.New("сжатие VNC должно быть от 1 до 9")
+		return errors.New("VNC compression must be from 1 to 9")
 	case !inRange(q.FPS, 1, 60):
-		return errors.New("частота кадров VNC должна быть от 1 до 60")
+		return errors.New("VNC frame rate must be from 1 to 60")
 	case !vncEncodings[q.Encoding]:
-		return errors.New("неизвестный режим кодирования VNC")
+		return errors.New("Unknown VNC encoding mode")
 	}
 	return nil
 }

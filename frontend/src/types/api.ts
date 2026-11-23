@@ -27,7 +27,6 @@ export interface RbacRole {
   name: string;
   description: string;
   permissions: string[];
-  folder_ids: number[];
   member_count: number;
   created_at: number;
   updated_at: number;
@@ -48,6 +47,8 @@ export interface RbacMember {
 export interface Session {
   user: User;
   csrf: string;
+  /** Architecture of the host: x86_64 or aarch64. Templates default to it. */
+  host_arch?: string;
 }
 
 export interface CanvasView {
@@ -63,7 +64,8 @@ export interface LabCanvas {
 }
 
 export interface Lab {
-  id: number;
+  /** Same as name (the laboratory identifier). */
+  id: string;
   owner_id: number;
   owner: string;
   name: string;
@@ -75,7 +77,12 @@ export interface Lab {
   networks: number;
   public_level: 'none' | 'view';
   perms: Record<string, boolean>;
-  folder_id: number;
+  /** Folder path ("" - root). */
+  folder: string;
+  /** Same as folder; kept for URL helpers. */
+  folder_id: string;
+  /** At least one machine of an instance is running (set on single-laboratory responses). */
+  running?: boolean;
 }
 
 type IfaceType = 'ens' | 'te' | 'ge';
@@ -98,10 +105,11 @@ export interface DeviceParams {
 export type MachineState = 'stopped' | 'running' | 'paused' | 'starting' | 'stopping' | 'error';
 
 export interface Device extends DeviceParams {
-  id: number;
-  lab_id: number;
+  /** Same as name. */
+  id: string;
+  lab_id: string;
   template_id: number | null;
-  image_id: number | null;
+  image_id: string | null;
   name: string;
   x: number;
   y: number;
@@ -129,8 +137,9 @@ export interface Device extends DeviceParams {
 export type NetworkType = 'isolated' | 'nat' | 'cloud';
 
 export interface Network {
-  id: number;
-  lab_id: number;
+  /** Same as name. */
+  id: string;
+  lab_id: string;
   name: string;
   type: NetworkType;
   subnet: string;
@@ -145,16 +154,23 @@ export interface Network {
 }
 
 export interface Connection {
-  id: number;
-  lab_id: number;
+  /** Same as key. */
+  id: string;
+  /** Stable key derived from the cable ends. */
+  key: string;
+  lab_id: string;
   a_type: 'device' | 'network';
-  a_id: number;
+  /** Same as a_name (the device or network name). */
+  a_id: string;
+  a_name: string;
   a_if: number;
   b_type: 'device' | 'network';
-  b_id: number;
+  /** Same as b_name (the device or network name). */
+  b_id: string;
+  b_name: string;
   b_if: number;
   up: boolean;
-  warnings?: string[];
+  warnings?: Message[];
 }
 
 export interface Topology {
@@ -196,23 +212,18 @@ export interface ImageItem {
   size_bytes: number;
   used_by: number;
   device_type: string;
-  kind: string;
   qemu: Record<string, string>;
 }
 
 export interface LabFolder {
-  id: number;
-  parent_id: number | null;
+  /** Slash-separated path relative to the laboratory root; the root is "". */
+  path: string;
   name: string;
+  /** Parent folder path ("" - the root). */
+  parent: string;
   lab_count: number;
   created_at: number;
   updated_at: number;
-}
-
-export interface FolderAccess {
-  user_id: number;
-  username: string;
-  folder_ids: number[];
 }
 
 export interface IconItem {
@@ -236,8 +247,10 @@ export interface NotificationItem {
   id: number;
   level: 'info' | 'success' | 'warning' | 'error';
   category: string;
+  /** English keys: the interface translates them with the parameters (see translateMessage). */
   title: string;
   body: string;
+  params?: Record<string, string>;
   link: string;
   read: boolean;
   created_at: number;
@@ -255,7 +268,7 @@ export interface NotificationsResponse {
 }
 
 export interface RunningLab {
-  id: number;
+  id: string;
   name: string;
   owner_id: number;
   owner: string;
@@ -287,7 +300,7 @@ export interface RunningLab {
 
 export interface MachineStatus {
   rid: number;
-  device_id: number;
+  device_id: string;
   name: string;
   type: string;
   icon_url: string;
@@ -302,7 +315,7 @@ export interface MachineStatus {
 }
 
 export interface LabStatus {
-  lab_id: number;
+  lab_id: string;
   instance: number;
   host_cpus: number;
   host_ram_bytes: number;
@@ -332,7 +345,7 @@ export interface SystemInfo {
   disk_free: number;
   disk_total: number;
   data_dir: string;
-  images_dir: string;
+  disks_dir: string;
   labs_dir: string;
   listen_addr: string;
   qemu_binary: string;
@@ -375,8 +388,16 @@ export interface AuditEntry {
   ts: number;
   username: string;
   action: string;
+  /** English text of the record. Keyed records also carry msg_key and msg_params in data. */
   detail: string;
   ip: string;
+  data?: Record<string, unknown>;
+}
+
+/** A text the server sends as an English key with parameters: translate it with translateMessage. */
+export interface Message {
+  key: string;
+  params?: Record<string, string>;
 }
 
 export interface PermCatalogItem {
@@ -415,9 +436,20 @@ export interface CustomTheme {
   colors: ThemeColors;
 }
 
+/** The user's own version of a ready-made theme: changed name, base and colors. */
+export interface PresetOverride {
+  name: string;
+  base: 'dark' | 'light';
+  colors: ThemeColors;
+}
+
 export interface ThemeState {
   active: string;
   custom: CustomTheme[];
+  /** Ready-made themes this user has changed, by preset id. The shared files are not touched. */
+  presets?: Record<string, PresetOverride>;
+  /** Ready-made themes this user has deleted, by preset id. */
+  hidden?: string[];
 }
 
 export interface ThemePreset {
@@ -449,25 +481,19 @@ export interface LabInstance {
 export interface WipeResult {
   ok: boolean;
   devices: number;
-  failed: string[];
+  failed: Message[];
   instance: number;
 }
 
 export interface DeviceCreateInput extends Partial<DeviceParams> {
   template_id: number;
-  image_id?: number | null;
+  image_id?: string | null;
   name?: string;
   count?: number;
   x: number;
   y: number;
   icon?: string;
   custom_icon?: string;
-}
-
-export interface Snapshot {
-  id: number;
-  name: string;
-  created_at: number;
 }
 
 export interface NicMAC {

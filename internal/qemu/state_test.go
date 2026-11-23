@@ -22,8 +22,9 @@ func newStateEnv(t *testing.T) (*Manager, *database.DB, int64) {
 	}
 	t.Cleanup(func() { db.Close() })
 	cfg := &config.Config{
-		DataDir: root, ImagesDir: filepath.Join(root, "images"),
-		LabsDir: filepath.Join(root, "labs"), RunDir: filepath.Join(root, "run"),
+		DataDir: root, DisksDir: filepath.Join(root, "disks"),
+		LabsDir: filepath.Join(root, "labs"), InstancesDir: filepath.Join(root, "instances"),
+		LogsDir: filepath.Join(root, "logs"), RunDir: filepath.Join(root, "run"),
 		QEMUPath: "qemu-system-x86_64",
 	}
 	res, _ := db.Exec(`INSERT INTO users(username,password_hash,role) VALUES('owner','x','user')`)
@@ -53,7 +54,7 @@ func TestStopKeepsStartHistory(t *testing.T) {
 	m.setState(rid, "running", "")
 	state, started := stateOf(t, m, db, rid)
 	if state != "running" || started == 0 {
-		t.Fatalf("запуск: состояние %q, started_at %d", state, started)
+		t.Fatalf("start: state %q, started_at %d", state, started)
 	}
 	first := started
 
@@ -61,22 +62,22 @@ func TestStopKeepsStartHistory(t *testing.T) {
 	m.setState(rid, "stopped", "")
 	state, started = stateOf(t, m, db, rid)
 	if state != "stopped" {
-		t.Fatalf("остановка: состояние %q", state)
+		t.Fatalf("stop: state %q", state)
 	}
 	if started != first {
-		t.Fatalf("история запуска потеряна: было %d, стало %d", first, started)
+		t.Fatalf("start history lost: was %d, now %d", first, started)
 	}
 
 	// A crash does not erase the history either.
-	m.setState(rid, "error", "QEMU завершился аварийно")
+	m.setState(rid, "error", "QEMU exited unexpectedly")
 	if _, started = stateOf(t, m, db, rid); started != first {
-		t.Fatalf("ошибка стёрла историю запуска: %d", started)
+		t.Fatalf("error erased start history: %d", started)
 	}
 
 	// A repeated start keeps the original time (the history is not overwritten).
 	m.setState(rid, "running", "")
 	if _, started = stateOf(t, m, db, rid); started != first {
-		t.Fatalf("повторный запуск перезаписал историю: было %d, стало %d", first, started)
+		t.Fatalf("repeated start overwrote history: was %d, now %d", first, started)
 	}
 }
 
@@ -89,11 +90,11 @@ func TestStartAttemptRecordsHistory(t *testing.T) {
 	}
 	state, started := stateOf(t, m, db, rid)
 	if state != "starting" || started == 0 {
-		t.Fatalf("начало запуска: состояние %q, started_at %d", state, started)
+		t.Fatalf("start attempt: state %q, started_at %d", state, started)
 	}
 	m.setState(rid, "stopped", "")
 	state, again := stateOf(t, m, db, rid)
 	if state != "stopped" || again != started {
-		t.Fatalf("остановка после попытки запуска: состояние %q, started_at %d (было %d)", state, again, started)
+		t.Fatalf("stop after start attempt: state %q, started_at %d (was %d)", state, again, started)
 	}
 }

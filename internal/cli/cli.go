@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 
 	"netrave/internal/config"
@@ -388,19 +387,19 @@ func runDoctor(args []string) int {
 // nftables rules and br_netfilter. Requires root to read the host's nftables.
 func runNetDiag(args []string) int {
 	// -lab is parsed here, other flags (-data, -db, ...) by the shared config.ParseArgs.
-	var labID int64
+	var labName string
 	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "-lab" || args[i] == "--lab":
 			if i+1 < len(args) {
 				i++
-				labID, _ = strconv.ParseInt(args[i], 10, 64)
+				labName = args[i]
 			}
 		case strings.HasPrefix(args[i], "-lab="):
-			labID, _ = strconv.ParseInt(strings.TrimPrefix(args[i], "-lab="), 10, 64)
+			labName = strings.TrimPrefix(args[i], "-lab=")
 		case strings.HasPrefix(args[i], "--lab="):
-			labID, _ = strconv.ParseInt(strings.TrimPrefix(args[i], "--lab="), 10, 64)
+			labName = strings.TrimPrefix(args[i], "--lab=")
 		default:
 			rest = append(rest, args[i])
 		}
@@ -419,19 +418,19 @@ func runNetDiag(args []string) int {
 		return fail(err)
 	}
 	defer db.Close()
-	var ids []int64
-	if labID != 0 {
-		ids = []int64{labID}
+	var names []string
+	if labName != "" {
+		names = []string{labName}
 	} else {
 		for _, l := range db.Labs.Labs() {
-			ids = append(ids, l.ID)
+			names = append(names, l.Name)
 		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		sort.Strings(names)
 	}
 	nm := network.New(db, cfg)
 	out := map[string]*network.Diag{}
-	for _, id := range ids {
-		out[fmt.Sprint(id)] = nm.Diagnostics(id)
+	for _, name := range names {
+		out[name] = nm.Diagnostics(name)
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Println(string(data))

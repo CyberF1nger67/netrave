@@ -49,7 +49,7 @@ func TestTemplateCarriesDiskAndIcon(t *testing.T) {
 		"console": "serial", "extra_args": "", "category": "cisco",
 	}
 
-	image, _ := db.Catalog.AddImage(catalog.Image{Name: "ubuntu", Dirname: "ubuntu", Kind: "image", LayoutJSON: "{}"})
+	image, _ := db.Catalog.AddImage(catalog.Image{Name: "ubuntu", Dirname: "ubuntu", LayoutJSON: "{}"})
 
 	withAssets := map[string]any{"name": "Router", "image_id": image, "icon": "router"}
 	for k, v := range base {
@@ -57,12 +57,12 @@ func TestTemplateCarriesDiskAndIcon(t *testing.T) {
 	}
 	rec := call(withAssets)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("создание шаблона: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("template creation: %d %s", rec.Code, rec.Body.String())
 	}
 	var tpl Template
 	json.Unmarshal(rec.Body.Bytes(), &tpl)
 	if tpl.ImageID != image || tpl.Icon != "router" {
-		t.Fatalf("диск или иконка шаблона не сохранены: %+v", tpl)
+		t.Fatalf("template disk or icon was not saved: %+v", tpl)
 	}
 
 	bad := map[string]any{"name": "Bad", "icon": "unknown"}
@@ -70,7 +70,7 @@ func TestTemplateCarriesDiskAndIcon(t *testing.T) {
 		bad[k] = v
 	}
 	if rec := call(bad); rec.Code != http.StatusCreated {
-		t.Fatalf("второй шаблон: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("second template: %d %s", rec.Code, rec.Body.String())
 	}
 	n := 0
 	for _, t := range db.Catalog.Templates() {
@@ -79,7 +79,7 @@ func TestTemplateCarriesDiskAndIcon(t *testing.T) {
 		}
 	}
 	if n != 0 {
-		t.Fatal("неизвестная иконка не должна сохраняться")
+		t.Fatal("unknown icon must not be saved")
 	}
 }
 
@@ -112,7 +112,7 @@ func TestDuplicateTemplate(t *testing.T) {
 		mux.ServeHTTP(rec, req)
 		return rec
 	}
-	image, _ := db.Catalog.AddImage(catalog.Image{Name: "ubuntu", Dirname: "ubuntu", Kind: "image", LayoutJSON: "{}"})
+	image, _ := db.Catalog.AddImage(catalog.Image{Name: "ubuntu", Dirname: "ubuntu", LayoutJSON: "{}"})
 
 	rec := call(http.MethodPost, "/api/templates", map[string]any{
 		"name": "Router", "vendor": "Cisco", "type": "router", "arch": "x86_64", "machine": "pc", "cpu": 4,
@@ -120,37 +120,37 @@ func TestDuplicateTemplate(t *testing.T) {
 		"console": "vnc", "extra_args": "", "image_id": image, "icon": "router", "category": "cisco",
 	})
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("создание: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("creation: %d %s", rec.Code, rec.Body.String())
 	}
 	var src Template
 	json.Unmarshal(rec.Body.Bytes(), &src)
 
 	rec = call(http.MethodPost, "/api/templates/"+strconv.FormatInt(src.ID, 10)+"/duplicate", nil)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("дубликат: %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("duplicate: %d %s", rec.Code, rec.Body.String())
 	}
 	var copy1 Template
 	json.Unmarshal(rec.Body.Bytes(), &copy1)
 	if copy1.ID == src.ID || copy1.Name != "Router-copy" {
-		t.Fatalf("имя копии: %+v", copy1)
+		t.Fatalf("copy name: %+v", copy1)
 	}
 	if copy1.ImageID != image || copy1.Icon != "router" || copy1.CPU != 4 || copy1.NICs != 3 || copy1.BIOS != "uefi" || copy1.Console != "vnc" {
-		t.Fatalf("параметры копии отличаются: %+v", copy1)
+		t.Fatalf("copy parameters differ: %+v", copy1)
 	}
 
 	// The second duplicate gets the next number.
 	rec = call(http.MethodPost, "/api/templates/"+strconv.FormatInt(src.ID, 10)+"/duplicate", nil)
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("второй дубликат: %d", rec.Code)
+		t.Fatalf("second duplicate: %d", rec.Code)
 	}
 	var copy2 Template
 	json.Unmarshal(rec.Body.Bytes(), &copy2)
 	if copy2.Name != "Router-copy-2" {
-		t.Fatalf("имя второго дубликата: %s", copy2.Name)
+		t.Fatalf("name of the second duplicate: %s", copy2.Name)
 	}
 
 	// Unknown template - 404.
 	if rec := call(http.MethodPost, "/api/templates/9999/duplicate", nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("неизвестный шаблон: %d", rec.Code)
+		t.Fatalf("unknown template: %d", rec.Code)
 	}
 }

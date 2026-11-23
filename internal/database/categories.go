@@ -17,9 +17,9 @@ var TemplateCategories = []TemplateCategory{
 	{"linux", "Linux"},
 	{"windows", "Windows"},
 	{"firewall", "Firewall"},
-	{"network", "Сеть и коммутация"},
-	{"server", "Серверы"},
-	{"other", "Другие"},
+	{"network", "Network and switching"},
+	{"server", "Servers"},
+	{"other", "Other"},
 }
 
 // ValidCategory reports whether such a category is in the list.

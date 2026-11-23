@@ -1,3 +1,4 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { imagesApi, templatesApi } from '../../api/endpoints';
@@ -13,6 +14,7 @@ import { IconPicker } from '../editor/IconPicker';
 import type { IconSelection } from '../editor/IconPicker';
 import { t, useLanguageStore } from '../../i18n';
 import { withAlpha } from '../../lib/color';
+import { templateDefaults } from '../../lib/arch';
 import { VNC_BITRATE_PRESETS, VNC_ENCODINGS, VNC_RESOLUTIONS } from '../vnc/quality';
 import type { VncQualitySettings } from '../../types/api';
 
@@ -52,8 +54,10 @@ function categoryOf(template: Template): string {
 }
 
 function TemplateDialog({ template, onClose, onSaved }: { template: Template | null; onClose: () => void; onSaved: () => void }) {
+  const hostArch = useAuthStore((state) => state.hostArch);
+  const hostDefaults = templateDefaults(hostArch);
   const blankVnc: VncQualitySettings = { resolution: 'auto', bitrate: null, quality: null, compression: null, fps: null, encoding: 'auto' };
-  const blank = { name: '', vendor: '', type: 'linux', category: '', arch: 'x86_64', machine: 'pc', cpu: 1, ram_mb: 1024, nics: 1, nic_model: 'virtio-net-pci', disk_bus: 'virtio', bios: 'seabios', console: 'serial', extra_args: '', iface_type: 'ens', iface_start: 0, image_id: 0, vnc: blankVnc };
+  const blank = { name: '', vendor: '', type: 'linux', category: '', arch: hostArch, machine: hostDefaults.machine, cpu: 1, ram_mb: 1024, nics: 1, nic_model: 'virtio-net-pci', disk_bus: 'virtio', bios: hostDefaults.bios, console: 'serial', extra_args: '', iface_type: 'ens', iface_start: 0, image_id: 0, vnc: blankVnc };
   const [form, setForm] = useState(template ?? blank);
   // Machine icon: standard or a custom PNG from the library (as in machine settings).
   const [icon, setIcon] = useState<IconSelection>({ icon: template?.icon ?? '', custom_icon: template?.custom_icon ?? '' });
@@ -76,8 +80,8 @@ function TemplateDialog({ template, onClose, onSaved }: { template: Template | n
         <label>{t('Name')}<input value={form.name} maxLength={64} onChange={(event) => set('name', event.target.value)} /></label>
         <label>{t('Vendor')}<input value={form.vendor} maxLength={64} onChange={(event) => set('vendor', event.target.value)} /></label>
         <label>{t('Type')}<select value={form.type} onChange={(event) => set('type', event.target.value)}>{TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
-        <label>{t('Catalog category')}<select value={form.category || categoryOf(form as Template)} onChange={(event) => set('category', event.target.value)}>{CATEGORIES.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}</select></label>
-        <label>{t('Architecture')}<select value={form.arch} onChange={(event) => set('arch', event.target.value)}><option>x86_64</option><option>i386</option></select></label>
+        <label>{t('Catalog category')}<select value={form.category || categoryOf(form as Template)} onChange={(event) => set('category', event.target.value)}>{CATEGORIES.map((category) => <option key={category.key} value={category.key}>{t(category.label as Parameters<typeof t>[0])}</option>)}</select></label>
+        <label>{t('Architecture')}<select value={form.arch} onChange={(event) => set('arch', event.target.value)}><option>x86_64</option><option>aarch64</option><option>i386</option></select></label>
         <label>{t('QEMU machine')}<input value={form.machine} onChange={(event) => set('machine', event.target.value)} /></label>
         <label>{t('CPU')}<NumberField min={1} max={64} value={form.cpu} onValueChange={(value) => set('cpu', value)} /></label>
         <label>{t('RAM, MB')}<NumberField min={64} max={524288} value={form.ram_mb} onValueChange={(value) => set('ram_mb', value)} /></label>
@@ -87,7 +91,7 @@ function TemplateDialog({ template, onClose, onSaved }: { template: Template | n
         <label>{t('Starting port')}<NumberField min={-1} max={31} title={t('-1 shifts numbering: nic0 = MGMT, nic1 = ge0')} value={form.iface_start} onValueChange={(value) => set('iface_start', value)} /></label>
         <label>{t('Disk bus')}<select value={form.disk_bus} onChange={(event) => set('disk_bus', event.target.value)}>{['virtio', 'ide', 'sata', 'scsi'].map((bus) => <option key={bus}>{bus}</option>)}</select></label>
         <label>{t('Firmware')}<select value={form.bios} onChange={(event) => set('bios', event.target.value)}><option value="seabios">{t('BIOS (SeaBIOS)')}</option><option value="uefi">{t('UEFI')}</option></select></label>
-        <label>{t('Console')}<select value={form.console} onChange={(event) => set('console', event.target.value)}><option value="serial">{t('Serial (terminal)')}</option><option value="vnc">{t('VNC (graphics)')}</option></select></label>
+        <label>{t('Console')}<select value={form.console} onChange={(event) => set('console', event.target.value)}><option value="serial">{t('xterm.js')}</option><option value="vnc">{t('VNC (graphics)')}</option></select></label>
         <label>{t('Additional QEMU arguments')}<input value={form.extra_args} maxLength={512} onChange={(event) => set('extra_args', event.target.value)} /></label>
         <label>{t('Disk image')}
           <Dropdown value={String(form.image_id ?? 0)} onChange={(value) => set('image_id', Number(value))}
@@ -282,8 +286,8 @@ export function TemplatesPage() {
                   toast.success(`${t('Template copied:')} ${copy.name}`);
                   void queryClient.invalidateQueries({ queryKey: ['templates'] });
                 })}>{t('Copy')}</button>
-                <button type="button" className={danger} onClick={() => {
-                  if (!confirm(`${t('Delete template?')} «${template.name}»`)) return;
+                <button type="button" className={danger} onClick={async () => {
+                  if (!(await askConfirm({ title: `${t('Delete template?')} «${template.name}»`, danger: true }))) return;
                   void guard(async () => { await templatesApi.remove(template.id); void queryClient.invalidateQueries({ queryKey: ['templates'] }); });
                 }}>{t('Delete')}</button>
               </div>}

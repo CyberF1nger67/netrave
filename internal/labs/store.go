@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"netrave/internal/catalog"
 	"time"
 
@@ -18,25 +19,25 @@ import (
 )
 
 // errNotFound - topology object not found.
-var errNotFound = errors.New("объект не найден")
+var errNotFound = errors.New("Object not found")
 
 // The topology (devices, networks, cables, their parameters and layout) is stored in the lab file
 // (labfile package). Instance state - running processes, copies of parameters and instance links -
 // remains in the database. The functions below join both sources.
 
-// labOwnerOf returns the lab of an object of kind with id id.
-func labOwnerOf(db *database.DB, kind string, id int64) (int64, bool) {
-	return db.Labs.LabOf(kind, id)
+// labOwnerOf reports whether the object belongs to the lab.
+func labOwnerOf(db *database.DB, kind, labName, name string) (string, bool) {
+	return db.Labs.LabOf(kind, labName, name)
 }
 
 // labData returns a copy of the lab from the file.
-func labData(db *database.DB, id int64) (labfile.Lab, bool) {
-	return db.Labs.Lab(id)
+func labData(db *database.DB, name string) (labfile.Lab, bool) {
+	return db.Labs.Lab(name)
 }
 
 // labView assembles a lab for the client: data from the file, owner name - from the database.
-func labView(db *database.DB, id int64) (*Lab, bool) {
-	fl, ok := labData(db, id)
+func labView(db *database.DB, name string) (*Lab, bool) {
+	fl, ok := labData(db, name)
 	if !ok {
 		return nil, false
 	}
@@ -46,8 +47,9 @@ func labView(db *database.DB, id int64) (*Lab, bool) {
 	if !validCanvas([]byte(canvas)) {
 		canvas = "{}"
 	}
+	folder, _ := db.Labs.Folder(fl.Name)
 	return &Lab{
-		ID:          fl.ID,
+		ID:          fl.Name,
 		OwnerID:     fl.OwnerID,
 		Owner:       owner,
 		Name:        fl.Name,
@@ -58,84 +60,87 @@ func labView(db *database.DB, id int64) (*Lab, bool) {
 		Devices:     len(fl.Devices),
 		Networks:    len(fl.Networks),
 		PublicLevel: fl.PublicLevel,
+		Folder:      folder,
+		FolderID:    folder,
 	}, true
 }
 
 // runningLabIDs returns the labs in which at least one instance machine is running.
 // Machine state lives only in the QEMU manager memory.
-func runningLabIDs(db *database.DB, m *qemu.Manager) (map[int64]bool, error) {
+func runningLabIDs(db *database.DB, m *qemu.Manager) (map[string]bool, error) {
 	rows, err := db.Query(`SELECT i.lab_id, d.id FROM lab_instances i
 		JOIN instance_devices d ON d.instance_id=i.id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]bool{}
+	out := map[string]bool{}
 	for rows.Next() {
-		var labID, rid int64
-		if err := rows.Scan(&labID, &rid); err != nil {
+		var labName string
+		var rid int64
+		if err := rows.Scan(&labName, &rid); err != nil {
 			return nil, err
 		}
 		if m != nil && m.Active(rid) {
-			out[labID] = true
+			out[labName] = true
 		}
 	}
 	return out, rows.Err()
 }
 
-// updateLabGet atomically changes the lab and returns the saved version (with assigned ids).
-func updateLabGet(db *database.DB, labID int64, fn func(*labfile.Lab) error) (labfile.Lab, error) {
-	return db.Labs.Update(labID, fn)
+// updateLabGet atomically changes the lab and returns the saved version.
+func updateLabGet(db *database.DB, labName string, fn func(*labfile.Lab) error) (labfile.Lab, error) {
+	return db.Labs.Update(labName, fn)
 }
 
-// owned checks that all objects of kind with ids ids belong to lab labID.
-func owned(db *database.DB, kind string, labID int64, ids []int64) error {
-	for _, id := range ids {
-		if owner, ok := labOwnerOf(db, kind, id); !ok || owner != labID {
-			return errors.New("объекты не принадлежат этой лаборатории")
+// owned checks that all objects of kind with names belong to the lab.
+func owned(db *database.DB, kind, labName string, names []string) error {
+	for _, name := range names {
+		if _, ok := labOwnerOf(db, kind, labName, name); !ok {
+			return errors.New("The objects do not belong to this laboratory")
 		}
 	}
 	return nil
 }
 
 // deviceNICs returns the number of network interfaces of a lab device.
-func deviceNICs(db *database.DB, labID, devID int64) (int, bool) {
-	l, ok := labData(db, labID)
+func deviceNICs(db *database.DB, labName, devName string) (int, bool) {
+	l, ok := labData(db, labName)
 	if !ok {
 		return 0, false
 	}
 	for _, d := range l.Devices {
-		if d.ID == devID {
+		if d.Name == devName {
 			return d.NICs, true
 		}
 	}
 	return 0, false
 }
 
-// cablesOnPort counts the cables occupying port devID with number ifc in lab labID.
-func cablesOnPort(db *database.DB, labID, devID int64, ifc int) int {
-	l, ok := labData(db, labID)
+// cablesOnPort counts the cables occupying port devName with number ifc in the lab.
+func cablesOnPort(db *database.DB, labName, devName string, ifc int) int {
+	l, ok := labData(db, labName)
 	if !ok {
 		return 0
 	}
 	n := 0
 	for _, c := range l.Connections {
-		if (c.A.Type == "device" && c.A.ID == devID && c.A.If == ifc) || (c.B.Type == "device" && c.B.ID == devID && c.B.If == ifc) {
+		if (c.A.Type == "device" && c.A.Name == devName && c.A.If == ifc) || (c.B.Type == "device" && c.B.Name == devName && c.B.If == ifc) {
 			n++
 		}
 	}
 	return n
 }
 
-// cablesFromPort counts the cables on ports of device devID with a number >= from.
-func cablesFromPort(db *database.DB, labID, devID int64, from int) int {
-	l, ok := labData(db, labID)
+// cablesFromPort counts the cables on ports of device devName with a number >= from.
+func cablesFromPort(db *database.DB, labName, devName string, from int) int {
+	l, ok := labData(db, labName)
 	if !ok {
 		return 0
 	}
 	n := 0
 	for _, c := range l.Connections {
-		if (c.A.Type == "device" && c.A.ID == devID && c.A.If >= from) || (c.B.Type == "device" && c.B.ID == devID && c.B.If >= from) {
+		if (c.A.Type == "device" && c.A.Name == devName && c.A.If >= from) || (c.B.Type == "device" && c.B.Name == devName && c.B.If >= from) {
 			n++
 		}
 	}
@@ -143,31 +148,27 @@ func cablesFromPort(db *database.DB, labID, devID int64, from int) int {
 }
 
 // updateLab atomically changes the lab in the file.
-func updateLab(db *database.DB, labID int64, fn func(*labfile.Lab) error) error {
-	_, err := db.Labs.Update(labID, fn)
+func updateLab(db *database.DB, labName string, fn func(*labfile.Lab) error) error {
+	_, err := db.Labs.Update(labName, fn)
 	return err
 }
 
 // touch marks the lab as modified.
-func touch(db *database.DB, labID int64) {
-	_ = updateLab(db, labID, func(l *labfile.Lab) error {
+func touch(db *database.DB, labName string) {
+	_ = updateLab(db, labName, func(l *labfile.Lab) error {
 		l.UpdatedAt = time.Now().Unix()
 		return nil
 	})
 }
 
-// findDevice returns a device from the file and the lab it belongs to.
-func findDevice(db *database.DB, id int64) (labfile.Lab, labfile.Device, bool) {
-	labID, ok := labOwnerOf(db, labfile.KindDevice, id)
-	if !ok {
-		return labfile.Lab{}, labfile.Device{}, false
-	}
-	l, ok := labData(db, labID)
+// findDevice returns a device from the file.
+func findDevice(db *database.DB, labName, devName string) (labfile.Lab, labfile.Device, bool) {
+	l, ok := labData(db, labName)
 	if !ok {
 		return labfile.Lab{}, labfile.Device{}, false
 	}
 	for _, d := range l.Devices {
-		if d.ID == id {
+		if d.Name == devName {
 			return l, d, true
 		}
 	}
@@ -175,17 +176,13 @@ func findDevice(db *database.DB, id int64) (labfile.Lab, labfile.Device, bool) {
 }
 
 // findNetwork returns a network from the file and its lab.
-func findNetwork(db *database.DB, id int64) (labfile.Lab, labfile.Network, bool) {
-	labID, ok := labOwnerOf(db, labfile.KindNetwork, id)
-	if !ok {
-		return labfile.Lab{}, labfile.Network{}, false
-	}
-	l, ok := labData(db, labID)
+func findNetwork(db *database.DB, labName, netName string) (labfile.Lab, labfile.Network, bool) {
+	l, ok := labData(db, labName)
 	if !ok {
 		return labfile.Lab{}, labfile.Network{}, false
 	}
 	for _, n := range l.Networks {
-		if n.ID == id {
+		if n.Name == netName {
 			return l, n, true
 		}
 	}
@@ -193,14 +190,10 @@ func findNetwork(db *database.DB, id int64) (labfile.Lab, labfile.Network, bool)
 }
 
 // setDevice changes a device in the lab file.
-func setDevice(db *database.DB, id int64, fn func(*labfile.Device)) error {
-	labID, ok := labOwnerOf(db, labfile.KindDevice, id)
-	if !ok {
-		return errNotFound
-	}
-	return updateLab(db, labID, func(l *labfile.Lab) error {
+func setDevice(db *database.DB, labName, devName string, fn func(*labfile.Device)) error {
+	return updateLab(db, labName, func(l *labfile.Lab) error {
 		for i := range l.Devices {
-			if l.Devices[i].ID == id {
+			if l.Devices[i].Name == devName {
 				fn(&l.Devices[i])
 				return nil
 			}
@@ -210,14 +203,10 @@ func setDevice(db *database.DB, id int64, fn func(*labfile.Device)) error {
 }
 
 // setNetwork changes a network in the lab file.
-func setNetwork(db *database.DB, id int64, fn func(*labfile.Network)) error {
-	labID, ok := labOwnerOf(db, labfile.KindNetwork, id)
-	if !ok {
-		return errNotFound
-	}
-	return updateLab(db, labID, func(l *labfile.Lab) error {
+func setNetwork(db *database.DB, labName, netName string, fn func(*labfile.Network)) error {
+	return updateLab(db, labName, func(l *labfile.Lab) error {
 		for i := range l.Networks {
-			if l.Networks[i].ID == id {
+			if l.Networks[i].Name == netName {
 				fn(&l.Networks[i])
 				return nil
 			}
@@ -227,14 +216,14 @@ func setNetwork(db *database.DB, id int64, fn func(*labfile.Network)) error {
 }
 
 // labDeviceCount - the number of machines in the lab.
-func labDeviceCount(db *database.DB, labID int64) int {
-	l, _ := labData(db, labID)
+func labDeviceCount(db *database.DB, labName string) int {
+	l, _ := labData(db, labName)
 	return len(l.Devices)
 }
 
 // loadNames returns the names of the lab's devices and networks.
-func loadNames(db *database.DB, labID int64) (map[string]bool, error) {
-	l, ok := labData(db, labID)
+func loadNames(db *database.DB, labName string) (map[string]bool, error) {
+	l, ok := labData(db, labName)
 	if !ok {
 		return nil, errNotFound
 	}
@@ -251,7 +240,7 @@ func loadNames(db *database.DB, labID int64) (map[string]bool, error) {
 // instRow - an instance machine row (instance_devices) to overlay on top of the lab file.
 type instRow struct {
 	RID        int64
-	ImageID    sql.NullInt64
+	ImageID    sql.NullString
 	Machine    string
 	CPU        int
 	RAMMB      int
@@ -268,17 +257,17 @@ type instRow struct {
 
 const instRowCols = `id,device_id,image_id,machine,cpu,ram_mb,nics,nic_model,iface_type,iface_start,disk_bus,bios,console,extra_args,applied`
 
-// loadInstRows reads the machine rows of instance instID, keyed by device id.
-func loadInstRows(q querier, instID int64) (map[int64]instRow, error) {
+// loadInstRows reads the machine rows of instance instID, keyed by device name.
+func loadInstRows(q querier, instID int64) (map[string]instRow, error) {
 	rows, err := q.Query(`SELECT `+instRowCols+` FROM instance_devices WHERE instance_id=?`, instID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]instRow{}
+	out := map[string]instRow{}
 	for rows.Next() {
 		var r instRow
-		var devID int64
+		var devID string
 		if err := rows.Scan(&r.RID, &devID, &r.ImageID, &r.Machine, &r.CPU, &r.RAMMB, &r.NICs, &r.NICModel, &r.IfaceType, &r.IfaceStart,
 			&r.DiskBus, &r.BIOS, &r.Console, &r.ExtraArgs, &r.Applied); err != nil {
 			return nil, err
@@ -299,10 +288,10 @@ func loadTemplateTypes(cat *catalog.Store) (map[int64]string, error) {
 
 // deviceView assembles a machine for the client: parameters and image from the file, state and overrides - from
 // the instance row (if there is one).
-func deviceView(labID int64, fd labfile.Device, r *instRow, tplTypes map[int64]string, rt qemu.Runtime) Device {
+func deviceView(labName string, fd labfile.Device, r *instRow, tplTypes map[int64]string, rt qemu.Runtime) Device {
 	d := Device{
-		ID:         fd.ID,
-		LabID:      labID,
+		ID:         fd.Name,
+		LabID:      labName,
 		Name:       fd.Name,
 		X:          fd.X,
 		Y:          fd.Y,
@@ -322,7 +311,7 @@ func deviceView(labID int64, fd labfile.Device, r *instRow, tplTypes map[int64]s
 			d.Type = t
 		}
 	}
-	if fd.ImageID != 0 {
+	if fd.ImageID != "" {
 		id := fd.ImageID
 		d.ImageID = &id
 	}
@@ -332,7 +321,7 @@ func deviceView(labID int64, fd labfile.Device, r *instRow, tplTypes map[int64]s
 		d.IfaceType, d.IfaceStart, d.DiskBus, d.BIOS, d.Console, d.ExtraArgs = r.IfaceType, r.IfaceStart, r.DiskBus, r.BIOS, r.Console, r.ExtraArgs
 		d.ImageID = nil
 		if r.ImageID.Valid {
-			id := r.ImageID.Int64
+			id := r.ImageID.String
 			d.ImageID = &id
 		}
 		d.Pending = pendingFields(&d, r.Applied)
@@ -341,14 +330,14 @@ func deviceView(labID int64, fd labfile.Device, r *instRow, tplTypes map[int64]s
 		rt.State = "stopped"
 	}
 	d.State, d.PID, d.VNCPort, d.SerialPort, d.LastError = rt.State, rt.PID, rt.VNCPort, rt.SerialPort, rt.LastError
-	d.IconURL = icons.URL(labID, d.Icon, d.CustomIcon)
+	d.IconURL = icons.URL(labName, d.Icon, d.CustomIcon)
 	return d
 }
 
 // getDeviceInst - a topology machine with the settings and state of instance instID (0 - no instance).
 // Mutable process state is taken from the QEMU manager, not from the database.
-func getDeviceInst(db *database.DB, id, instID int64, m *qemu.Manager) (*Device, error) {
-	l, fd, ok := findDevice(db, id)
+func getDeviceInst(db *database.DB, labName, devName string, instID int64, m *qemu.Manager) (*Device, error) {
+	_, fd, ok := findDevice(db, labName, devName)
 	if !ok {
 		return nil, errNotFound
 	}
@@ -359,7 +348,7 @@ func getDeviceInst(db *database.DB, id, instID int64, m *qemu.Manager) (*Device,
 		if err != nil {
 			return nil, err
 		}
-		if row, ok := rows[id]; ok {
+		if row, ok := rows[devName]; ok {
 			r = &row
 			if m != nil {
 				rt = m.Runtime(r.RID)
@@ -370,15 +359,15 @@ func getDeviceInst(db *database.DB, id, instID int64, m *qemu.Manager) (*Device,
 	if err != nil {
 		return nil, err
 	}
-	d := deviceView(l.ID, fd, r, tpl, rt)
+	d := deviceView(labName, fd, r, tpl, rt)
 	return &d, nil
 }
 
 // networkView assembles a network for the client. The single NAT cloud is shared by all labs (see natcloud).
-func networkView(fn labfile.Network, labID int64) Network {
+func networkView(fn labfile.Network, labName string) Network {
 	n := Network{
-		ID:         fn.ID,
-		LabID:      labID,
+		ID:         fn.Name,
+		LabID:      labName,
 		Name:       fn.Name,
 		Type:       fn.Type,
 		Subnet:     fn.Subnet,
@@ -398,24 +387,24 @@ func networkView(fn labfile.Network, labID int64) Network {
 	return n
 }
 
-func getNetwork(db *database.DB, id int64) (*Network, error) {
-	l, fn, ok := findNetwork(db, id)
+func getNetwork(db *database.DB, labName, netName string) (*Network, error) {
+	_, fn, ok := findNetwork(db, labName, netName)
 	if !ok {
 		return nil, errNotFound
 	}
-	n := networkView(fn, l.ID)
+	n := networkView(fn, labName)
 	return &n, nil
 }
 
 // loadTopology assembles the lab topology for instance instID (0 - no instance).
-func loadTopology(db *database.DB, labID, instID int64, m *qemu.Manager) (*Topology, error) {
+func loadTopology(db *database.DB, labName string, instID int64, m *qemu.Manager) (*Topology, error) {
 	t := &Topology{Devices: []Device{}, Networks: []Network{}, Connections: []Conn{}}
-	l, ok := labData(db, labID)
+	l, ok := labData(db, labName)
 	if !ok {
 		return nil, errNotFound
 	}
-	rows := map[int64]instRow{}
-	up := map[int64]bool{}
+	rows := map[string]instRow{}
+	up := map[string]bool{}
 	if instID != 0 {
 		var err error
 		if rows, err = loadInstRows(db, instID); err != nil {
@@ -432,33 +421,33 @@ func loadTopology(db *database.DB, labID, instID int64, m *qemu.Manager) (*Topol
 	for _, fd := range l.Devices {
 		var r *instRow
 		rt := qemu.Runtime{State: "stopped"}
-		if row, ok := rows[fd.ID]; ok {
+		if row, ok := rows[fd.Name]; ok {
 			r = &row
 			if m != nil {
 				rt = m.Runtime(r.RID)
 			}
 		}
-		t.Devices = append(t.Devices, deviceView(labID, fd, r, tpl, rt))
+		t.Devices = append(t.Devices, deviceView(labName, fd, r, tpl, rt))
 	}
 	for _, fn := range l.Networks {
-		t.Networks = append(t.Networks, networkView(fn, labID))
+		t.Networks = append(t.Networks, networkView(fn, labName))
 	}
 	for _, c := range l.Connections {
-		t.Connections = append(t.Connections, connView(labID, c, up))
+		t.Connections = append(t.Connections, connView(labName, c, up))
 	}
 	return t, nil
 }
 
 // loadLinkStates returns the state of the instance's cables: a cable is enabled by default.
-func loadLinkStates(q querier, instID int64) (map[int64]bool, error) {
+func loadLinkStates(q querier, instID int64) (map[string]bool, error) {
 	rows, err := q.Query(`SELECT connection_id,up FROM instance_links WHERE instance_id=?`, instID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]bool{}
+	out := map[string]bool{}
 	for rows.Next() {
-		var id int64
+		var id string
 		var u int
 		if err := rows.Scan(&id, &u); err != nil {
 			return nil, err
@@ -468,21 +457,22 @@ func loadLinkStates(q querier, instID int64) (map[int64]bool, error) {
 	return out, rows.Err()
 }
 
-func connView(labID int64, c labfile.Connection, up map[int64]bool) Conn {
-	state, ok := up[c.ID]
+func connView(labName string, c labfile.Connection, up map[string]bool) Conn {
+	key := c.Key()
+	state, ok := up[key]
 	if !ok {
 		state = true
 	}
 	return Conn{
-		ID: c.ID, LabID: labID,
-		AType: c.A.Type, AID: c.A.ID, AIf: c.A.If,
-		BType: c.B.Type, BID: c.B.ID, BIf: c.B.If,
+		ID: key, Key: key, LabID: labName,
+		AType: c.A.Type, AName: c.A.Name, AID: c.A.Name, AIf: c.A.If,
+		BType: c.B.Type, BName: c.B.Name, BID: c.B.Name, BIf: c.B.If,
 		Up: state,
 	}
 }
 
-// deviceAddLabs selects the object written to the file from the creation parameters.
-func newDevice(labID int64, tplID int64, imgID *int64, name string, x, y float64, p Params) labfile.Device {
+// newDevice selects the object written to the file from the creation parameters.
+func newDevice(_ string, tplID int64, imgID *string, name string, x, y float64, p Params) labfile.Device {
 	d := labfile.Device{
 		TemplateID: tplID,
 		Name:       name,
@@ -518,21 +508,46 @@ func newNetwork(n *Network, x, y float64) labfile.Network {
 		DHCPStart:   n.DHCPStart,
 		DHCPEnd:     n.DHCPEnd,
 		HostIface:   n.HostIface,
+		BridgeName:  bridgeName(n.Name),
 		X:           x,
 		Y:           y,
 	}
 }
 
-// bridgeName - network bridge name: it depends on the id, so it is assigned after the id is given.
-func bridgeName(id int64) string { return fmt.Sprintf("nrn%d", id) }
+// bridgeName builds a stable Linux bridge name from a network name (15 characters maximum).
+func bridgeName(name string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return fmt.Sprintf("nrn%08x", h.Sum32())
+}
+
+// syncConnectionKeys updates instance cable rows after endpoints were renamed: the cable key
+// is derived from the ends, so its row key changes with them.
+func syncConnectionKeys(db *database.DB, labName string, before, after labfile.Lab) error {
+	if len(before.Connections) != len(after.Connections) {
+		return nil
+	}
+	for i := range before.Connections {
+		oldKey, newKey := before.Connections[i].Key(), after.Connections[i].Key()
+		if oldKey == newKey {
+			continue
+		}
+		if _, err := db.Exec(`UPDATE instance_links SET connection_id=?
+			WHERE connection_id=? AND instance_id IN (SELECT id FROM lab_instances WHERE lab_id=?)`,
+			newKey, oldKey, labName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // pruneInstances deletes instance rows referencing deleted objects (the former foreign key cascade).
-func pruneInstances(q execer, devices, networks, connections []int64) error {
-	del := func(table, column string, ids []int64) error {
+func pruneInstances(q execer, devices, networks, connections []string) error {
+	del := func(table, column string, ids []string) error {
 		if len(ids) == 0 {
 			return nil
 		}
-		_, err := q.Exec(`DELETE FROM `+table+` WHERE `+column+` IN (`+placeholders(len(ids))+`)`, idArgs(0, ids)[1:]...)
+		_, err := q.Exec(`DELETE FROM `+table+` WHERE `+column+` IN (`+placeholders(len(ids))+`)`, nameArgs(ids)...)
 		return err
 	}
 	if err := del("instance_devices", "device_id", devices); err != nil {
@@ -542,4 +557,12 @@ func pruneInstances(q execer, devices, networks, connections []int64) error {
 		return err
 	}
 	return del("instance_links", "connection_id", connections)
+}
+
+func nameArgs(names []string) []any {
+	a := make([]any, 0, len(names))
+	for _, name := range names {
+		a = append(a, name)
+	}
+	return a
 }

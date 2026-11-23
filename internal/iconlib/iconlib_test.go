@@ -102,7 +102,7 @@ func (e *env) list(t *testing.T, u who) []Item {
 	t.Helper()
 	rec := e.call(u, http.MethodGet, "/api/icon-library", "", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("список: код %d, %s", rec.Code, rec.Body.String())
+		t.Fatalf("list: code %d, %s", rec.Code, rec.Body.String())
 	}
 	var items []Item
 	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
@@ -120,7 +120,7 @@ func (e *env) uploadAs(t *testing.T, u who, query, ctype string, data []byte) up
 	t.Helper()
 	rec := e.call(u, http.MethodPost, "/api/icon-library"+query, ctype, data)
 	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
-		t.Fatalf("загрузка: код %d, %s", rec.Code, rec.Body.String())
+		t.Fatalf("upload: code %d, %s", rec.Code, rec.Body.String())
 	}
 	var r uploadResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &r); err != nil {
@@ -137,17 +137,17 @@ func TestUploadDedupesSameImage(t *testing.T) {
 
 	first := e.upload(t, ann, "?name=Router", png1)
 	if !first.Created || first.Name != "Router" {
-		t.Fatalf("первая загрузка: created=%v name=%q", first.Created, first.Name)
+		t.Fatalf("first upload: created=%v name=%q", first.Created, first.Name)
 	}
 	again := e.upload(t, ann, "?name=Other", png1)
 	if again.Created {
-		t.Fatal("повторная загрузка той же картинки создала дубликат")
+		t.Fatal("re-upload of same picture created duplicate")
 	}
 	if again.ID != first.ID || again.Name != "Router" {
-		t.Fatalf("повтор должен вернуть ту же запись со старым названием: id %d/%d name %q", again.ID, first.ID, again.Name)
+		t.Fatalf("repeat must return same record with old name: id %d/%d name %q", again.ID, first.ID, again.Name)
 	}
 	if items := e.list(t, ann); len(items) != 1 {
-		t.Fatalf("в библиотеке %d записей, ожидалась 1", len(items))
+		t.Fatalf("%d records in library, expected 1", len(items))
 	}
 }
 
@@ -163,14 +163,14 @@ func TestLibrarySurvivesRestartAndRelogin(t *testing.T) {
 	defer e2.db.Close()
 	items := e2.list(t, ann)
 	if len(items) != 1 || items[0].Hash != up.Hash || items[0].Name != "Switch" {
-		t.Fatalf("после перезапуска библиотека: %+v", items)
+		t.Fatalf("library after restart: %+v", items)
 	}
 	rec := e2.call(ann, http.MethodGet, items[0].URL, "", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("картинка после перезапуска: код %d", rec.Code)
+		t.Fatalf("picture after restart: code %d", rec.Code)
 	}
 	if _, err := png.Decode(bytes.NewReader(rec.Body.Bytes())); err != nil {
-		t.Fatalf("картинка после перезапуска не PNG: %v", err)
+		t.Fatalf("picture after restart is not PNG: %v", err)
 	}
 }
 
@@ -184,21 +184,21 @@ func TestRenameAndIsolation(t *testing.T) {
 	rename := []byte(`{"name":"Switch"}`)
 	path := "/api/icon-library/" + strconv.FormatInt(it.ID, 10)
 	if rec := e.call(ann, http.MethodPut, path, "application/json", rename); rec.Code != http.StatusOK {
-		t.Fatalf("переименование владельцем: код %d, %s", rec.Code, rec.Body.String())
+		t.Fatalf("rename by owner: code %d, %s", rec.Code, rec.Body.String())
 	}
 	if items := e.list(t, ann); items[0].Name != "Switch" {
-		t.Fatalf("название не изменилось: %q", items[0].Name)
+		t.Fatalf("name did not change: %q", items[0].Name)
 	}
 
 	// Another user's entry is indistinguishable from a nonexistent one.
 	if rec := e.call(bob, http.MethodPut, path, "application/json", rename); rec.Code != http.StatusNotFound {
-		t.Fatalf("чужое переименование: код %d, ожидалось 404", rec.Code)
+		t.Fatalf("foreign rename: code %d, expected 404", rec.Code)
 	}
 	if rec := e.call(bob, http.MethodGet, path+"/image", "", nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("чужая картинка: код %d, ожидалось 404", rec.Code)
+		t.Fatalf("foreign picture: code %d, expected 404", rec.Code)
 	}
 	if items := e.list(t, bob); len(items) != 0 {
-		t.Fatalf("библиотека другого пользователя не пуста: %+v", items)
+		t.Fatalf("another user's library is not empty: %+v", items)
 	}
 }
 
@@ -213,24 +213,24 @@ func TestAdminsShareIconLibrary(t *testing.T) {
 	// The second administrator sees the first one's icon and can open its picture.
 	items := e.list(t, bob)
 	if len(items) != 1 || items[0].ID != it.ID || items[0].Name != "Router" {
-		t.Fatalf("общая библиотека администраторов: %+v", items)
+		t.Fatalf("shared admin library: %+v", items)
 	}
 	if rec := e.call(bob, http.MethodGet, it.URL, "", nil); rec.Code != http.StatusOK {
-		t.Fatalf("картинка для другого администратора: код %d", rec.Code)
+		t.Fatalf("picture for another admin: code %d", rec.Code)
 	}
 
 	// A regular user does not see administrator icons.
 	if items := e.list(t, carol); len(items) != 0 {
-		t.Fatalf("пользователю видны иконки администраторов: %+v", items)
+		t.Fatalf("admin icons visible to user: %+v", items)
 	}
 	if rec := e.call(carol, http.MethodGet, it.URL, "", nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("пользователь открыл картинку администратора: код %d", rec.Code)
+		t.Fatalf("user opened admin picture: code %d", rec.Code)
 	}
 
 	// Uploading the same picture again by another administrator does not create a duplicate.
 	again := e.upload(t, bob, "?name=Other", pngBytes(t, 18, color.NRGBA{R: 30, G: 120, A: 255}))
 	if again.Created || again.ID != it.ID {
-		t.Fatalf("дубликат в общей библиотеке: created=%v id=%d, ожидался id=%d", again.Created, again.ID, it.ID)
+		t.Fatalf("duplicate in shared library: created=%v id=%d, expected id=%d", again.Created, again.ID, it.ID)
 	}
 }
 
@@ -243,25 +243,25 @@ func TestDeleteKeepsFileStillInUse(t *testing.T) {
 	a := e.upload(t, ann, "", data)
 	b := e.upload(t, bob, "", data)
 	if a.Hash != b.Hash {
-		t.Fatal("одна и та же картинка должна иметь один хеш у разных пользователей")
+		t.Fatal("same picture must have one hash across users")
 	}
 
 	// Ann deletes her entry, but the file is still needed by Bob's library.
 	path := "/api/icon-library/" + strconv.FormatInt(a.ID, 10)
 	if rec := e.call(ann, http.MethodDelete, path, "", nil); rec.Code != http.StatusNoContent {
-		t.Fatalf("удаление: код %d, %s", rec.Code, rec.Body.String())
+		t.Fatalf("delete: code %d, %s", rec.Code, rec.Body.String())
 	}
 	if !e.icons.Exists(a.Hash) {
-		t.Fatal("файл удалён, хотя его использует библиотека другого пользователя")
+		t.Fatal("file deleted although another user's library uses it")
 	}
 
 	// The last entry is deleted - the file is no longer needed by anyone.
 	path = "/api/icon-library/" + strconv.FormatInt(b.ID, 10)
 	if rec := e.call(bob, http.MethodDelete, path, "", nil); rec.Code != http.StatusNoContent {
-		t.Fatalf("удаление последней записи: код %d", rec.Code)
+		t.Fatalf("deleting last record: code %d", rec.Code)
 	}
 	if e.icons.Exists(a.Hash) {
-		t.Fatal("файл остался на диске после удаления последней ссылки")
+		t.Fatal("file remained on disk after last reference was deleted")
 	}
 }
 
@@ -270,13 +270,13 @@ func TestRejectsUnsupportedTypeAndBrokenImage(t *testing.T) {
 	defer e.db.Close()
 	ann := e.user(t, "ann")
 	if rec := e.call(ann, http.MethodPost, "/api/icon-library", "text/plain", []byte("x")); rec.Code != http.StatusUnsupportedMediaType {
-		t.Fatalf("неподдерживаемый Content-Type: код %d", rec.Code)
+		t.Fatalf("unsupported Content-Type: code %d", rec.Code)
 	}
 	if rec := e.call(ann, http.MethodPost, "/api/icon-library", "image/png", []byte("not a png")); rec.Code != http.StatusBadRequest {
-		t.Fatalf("повреждённый PNG: код %d", rec.Code)
+		t.Fatalf("corrupted PNG: code %d", rec.Code)
 	}
 	if rec := e.call(ann, http.MethodPost, "/api/icon-library", "image/svg+xml", []byte(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><script>alert(1)</script></svg>`)); rec.Code != http.StatusBadRequest {
-		t.Fatalf("SVG со скриптом: код %d", rec.Code)
+		t.Fatalf("SVG with script: code %d", rec.Code)
 	}
 }
 
@@ -287,19 +287,19 @@ func TestUploadsSVGAndServesItAsVector(t *testing.T) {
 	svg := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"><rect width="64" height="64" fill="#123456"/><circle cx="32" cy="32" r="12" fill="url(#g)"/><defs><linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient></defs></svg>`)
 	up := e.uploadAs(t, ann, "?name=Vector", "image/svg+xml", svg)
 	if up.Width != 64 || up.Height != 64 {
-		t.Fatalf("размеры SVG: %d×%d", up.Width, up.Height)
+		t.Fatalf("SVG size: %d×%d", up.Width, up.Height)
 	}
 	rec := e.call(ann, http.MethodGet, up.URL, "", nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("картинка SVG: код %d", rec.Code)
+		t.Fatalf("SVG picture: code %d", rec.Code)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "image/svg+xml" {
 		t.Fatalf("MIME SVG: %q", ct)
 	}
 	if !bytes.Contains(rec.Body.Bytes(), []byte("<svg")) {
-		t.Fatalf("ответ не SVG: %q", rec.Body.String())
+		t.Fatalf("response is not SVG: %q", rec.Body.String())
 	}
 	if bytes.Contains(rec.Body.Bytes(), []byte("<script")) {
-		t.Fatalf("скрипт попал в сохранённый SVG")
+		t.Fatalf("script got into saved SVG")
 	}
 }

@@ -8,6 +8,8 @@ type AuthStatus = 'loading' | 'guest' | 'authenticated';
 interface AuthState {
   user: User | null;
   status: AuthStatus;
+  /** Architecture of the server host (x86_64 or aarch64). */
+  hostArch: string;
   /** Session expired on the server: show a notification on the login page. */
   sessionExpired: boolean;
   bootstrap: () => Promise<void>;
@@ -19,12 +21,13 @@ interface AuthState {
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   status: 'loading',
+  hostArch: 'x86_64',
   sessionExpired: false,
   bootstrap: async () => {
     try {
       const session = await authApi.me();
       setCsrfToken(session.csrf);
-      set({ user: session.user, status: 'authenticated' });
+      set({ user: session.user, status: 'authenticated', hostArch: session.host_arch || 'x86_64' });
     } catch {
       setCsrfToken('');
       set({ user: null, status: 'guest' });
@@ -33,7 +36,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   login: async (username, password) => {
     const session = await authApi.login(username, password);
     setCsrfToken(session.csrf);
-    set({ user: session.user, status: 'authenticated', sessionExpired: false });
+    set({ user: session.user, status: 'authenticated', sessionExpired: false, hostArch: session.host_arch || 'x86_64' });
   },
   logout: async () => {
     try {

@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { PASSWORD_MAX_LENGTH, isValidPassword } from '../../lib/names';
 import type { FormEvent } from 'react';
 import { Modal } from './Modal';
 import { PasswordInput } from './PasswordInput';
@@ -54,8 +55,8 @@ export function PasswordDialog({
   }, [saving, onClose]);
 
   const mismatch = confirm.length > 0 && next !== confirm;
-  const lengthInvalid = next.length > 0 && (next.length < 8 || next.length > 128);
-  const complete = (!requireCurrent || current.length > 0) && next.length >= 8 && next.length <= 128 && confirm === next;
+  const lengthInvalid = next.length > 0 && !isValidPassword(next);
+  const complete = (!requireCurrent || current.length > 0) && isValidPassword(next) && confirm === next;
   const visibleError = error || (mismatch ? t('Passwords do not match') : '');
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
@@ -69,8 +70,8 @@ export function PasswordDialog({
       setError(t('Enter new password'));
       return;
     }
-    if (next.length < 8 || next.length > 128) {
-      setError(t('New password must contain 8 to 128 characters'));
+    if (!isValidPassword(next)) {
+      setError(t('Password: 8–256 characters, Latin letters, digits and symbols, no spaces'));
       return;
     }
     if (!confirm) {
@@ -111,12 +112,12 @@ export function PasswordDialog({
             />
           </>
         )}
-        <label htmlFor="password-dialog-new">{t('New password (8–128 characters)')}</label>
+        <label htmlFor="password-dialog-new">{t('New password (8–256 characters)')}</label>
         <PasswordInput
           id="password-dialog-new"
           autoComplete="new-password"
           minLength={8}
-          maxLength={128}
+          maxLength={PASSWORD_MAX_LENGTH}
           value={next}
           disabled={saving}
           placeholder={t('Enter new password')}
@@ -127,7 +128,7 @@ export function PasswordDialog({
           id="password-dialog-confirm"
           autoComplete="new-password"
           minLength={8}
-          maxLength={128}
+          maxLength={PASSWORD_MAX_LENGTH}
           value={confirm}
           disabled={saving}
           placeholder={t('Enter the same password again')}
@@ -135,7 +136,7 @@ export function PasswordDialog({
         />
         {(visibleError || lengthInvalid) && (
           <div role="alert" aria-live="polite" className="mt-2.5 text-xs leading-relaxed text-bad">
-            {visibleError || t('New password must contain 8 to 128 characters')}
+            {visibleError || t('Password: 8–256 characters, Latin letters, digits and symbols, no spaces')}
           </div>
         )}
         <div className="mt-5 flex flex-wrap justify-end gap-2 max-sm:[&>button]:flex-auto">

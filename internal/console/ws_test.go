@@ -100,11 +100,11 @@ func dialWS(t *testing.T, addr string) *wsClient {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("рукопожатие: статус %d", resp.StatusCode)
+		t.Fatalf("handshake: status %d", resp.StatusCode)
 	}
 	sum := sha1.Sum([]byte(key + wsGUID))
 	if got := resp.Header.Get("Sec-WebSocket-Accept"); got != base64.StdEncoding.EncodeToString(sum[:]) {
-		t.Fatalf("неверный Sec-WebSocket-Accept: %s", got)
+		t.Fatalf("wrong Sec-WebSocket-Accept: %s", got)
 	}
 	return &wsClient{c: c, rd: rd}
 }
@@ -141,7 +141,7 @@ func (w *wsClient) read(t *testing.T) (byte, []byte) {
 	w.c.SetReadDeadline(time.Now().Add(3 * time.Second))
 	h := make([]byte, 2)
 	if _, err := io.ReadFull(w.rd, h); err != nil {
-		t.Fatalf("чтение кадра: %v", err)
+		t.Fatalf("reading frame: %v", err)
 	}
 	op := h[0] & 0x0f
 	n := uint64(h[1] & 0x7f)
@@ -157,7 +157,7 @@ func (w *wsClient) read(t *testing.T) (byte, []byte) {
 	}
 	p := make([]byte, n)
 	if _, err := io.ReadFull(w.rd, p); err != nil {
-		t.Fatalf("чтение данных: %v", err)
+		t.Fatalf("reading data: %v", err)
 	}
 	return op, p
 }
@@ -169,7 +169,7 @@ func (w *wsClient) readBinaryUntil(t *testing.T, want string) string {
 	for got.Len() < len(want) {
 		op, p := w.read(t)
 		if op != opBinary {
-			t.Fatalf("ожидался бинарный кадр, пришёл тип %#x", op)
+			t.Fatalf("expected binary frame, got type %#x", op)
 		}
 		got.Write(p)
 	}
@@ -186,19 +186,19 @@ func TestSerialBridgeOutputInputEcho(t *testing.T) {
 
 	// Output: the guest's prompt reaches the browser as a binary frame.
 	if out := ws.readBinaryUntil(t, "BOOT OK\r\n"); out != "BOOT OK\r\n" {
-		t.Fatalf("вывод: %q", out)
+		t.Fatalf("output: %q", out)
 	}
 
 	// Input: a text frame with a command goes to the guest, the echo returns to the browser.
 	ws.send(t, opText, []byte("ls -la\r"))
 	if out := ws.readBinaryUntil(t, "ls -la\r"); out != "ls -la\r" {
-		t.Fatalf("эхо ввода: %q", out)
+		t.Fatalf("input echo: %q", out)
 	}
 
-	// Binary input (as from TextTerminal when pasting UTF-8) also passes through completely.
+	// Binary input (as from xterm.js when pasting UTF-8) also passes through completely.
 	ws.send(t, opBinary, []byte("привет\x03"))
 	if out := ws.readBinaryUntil(t, "привет\x03"); out != "привет\x03" {
-		t.Fatalf("UTF-8 и управляющие символы: %q", out)
+		t.Fatalf("UTF-8 and control characters: %q", out)
 	}
 }
 
@@ -238,7 +238,7 @@ func TestSerialBridgeLongFrames(t *testing.T) {
 		payload := bytes.Repeat([]byte{'a' + byte(n%26)}, n)
 		ws.send(t, opBinary, payload)
 		if out := ws.readBinaryUntil(t, string(payload)); out != string(payload) {
-			t.Fatalf("длина %d: эхо не совпало (получено %d байт)", n, len(out))
+			t.Fatalf("length %d: echo mismatch (got %d bytes)", n, len(out))
 		}
 	}
 }
@@ -259,6 +259,6 @@ func TestSerialBridgePingCloseAndGuestGone(t *testing.T) {
 	ws.send(t, opClose, []byte{0x03, 0xe8})
 	op, _ := ws.read(t)
 	if op != opClose {
-		t.Fatalf("ожидался close-кадр, пришёл %#x", op)
+		t.Fatalf("expected close frame, got %#x", op)
 	}
 }

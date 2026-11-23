@@ -41,7 +41,7 @@ type Journal struct {
 	path         string
 	nextID       int64
 	size         int64
-	lastWipe     map[int64]int64
+	lastWipe     map[string]int64
 	lastWipeInst map[int64]int64
 }
 
@@ -54,7 +54,7 @@ func Open(path string) (*Journal, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
 	}
-	j := &Journal{path: path, lastWipe: map[int64]int64{}, lastWipeInst: map[int64]int64{}}
+	j := &Journal{path: path, lastWipe: map[string]int64{}, lastWipeInst: map[int64]int64{}}
 	if fi, err := os.Stat(path); err == nil {
 		j.size = fi.Size()
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -128,13 +128,13 @@ func (j *Journal) Append(e Entry) error {
 }
 
 // LastWipe returns the time of the last lab wipe (0 - never wiped).
-func (j *Journal) LastWipe(labID int64) int64 {
+func (j *Journal) LastWipe(labName string) int64 {
 	if j == nil {
 		return 0
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	return j.lastWipe[labID]
+	return j.lastWipe[labName]
 }
 
 // LastWipeInstance returns the time of the last wipe of a lab instance (0 - never wiped).
@@ -186,25 +186,18 @@ func (j *Journal) Clear() error {
 		}
 	}
 	j.size = 0
-	j.lastWipe = map[int64]int64{}
+	j.lastWipe = map[string]int64{}
 	j.lastWipeInst = map[int64]int64{}
 	return nil
 }
 
-func labOf(e Entry) (int64, bool) {
-	// Fresh entries store the number as int, ones read from the file as float64 (JSON).
-	switch v := e.Data["lab_id"].(type) {
-	case float64:
-		return int64(v), true
-	case int:
-		return int64(v), true
-	case int64:
+func labOf(e Entry) (string, bool) {
+	if v, ok := e.Data["lab_id"].(string); ok {
 		return v, true
 	}
-	return 0, false
+	return "", false
 }
 
-// instanceOf extracts the instance id from a Wipe entry. Entries without this field belong to no instance.
 func instanceOf(e Entry) (int64, bool) {
 	switch v := e.Data["instance"].(type) {
 	case float64:
@@ -295,12 +288,12 @@ func readBackward(path string, fn func(Entry) bool) error {
 }
 
 // LabWipes returns the recent lab wipes (matching lab_id), newest first.
-func (j *Journal) LabWipes(labID int64, limit int) ([]Entry, error) {
+func (j *Journal) LabWipes(labName string, limit int) ([]Entry, error) {
 	return j.Tail(limit, func(e Entry) bool {
 		if e.Action != ActionLabWipe {
 			return false
 		}
 		lab, ok := labOf(e)
-		return ok && lab == labID
+		return ok && lab == labName
 	})
 }

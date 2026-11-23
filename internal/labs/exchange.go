@@ -17,11 +17,13 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"netrave/internal/yamlfmt"
 
 	"netrave/internal/access"
 	"netrave/internal/auth"
 	"netrave/internal/httpx"
 	"netrave/internal/icons"
+	"netrave/internal/msgs"
 	"netrave/internal/natcloud"
 	"netrave/internal/notify"
 )
@@ -87,7 +89,7 @@ func exportCanvas(raw json.RawMessage) any {
 func (h *Handler) buildExport(db *database.DB, lab *Lab) (*Export, error) {
 	e := &Export{Format: "netrave-lab", Version: 1, Name: lab.Name, Description: lab.Description, Canvas: exportCanvas(lab.Canvas),
 		Devices: []ExpDevice{}, Networks: []ExpNetwork{}, Connections: []ExpConn{}}
-	fl, ok := labData(db, lab.ID)
+	fl, ok := labData(db, lab.Name)
 	if !ok {
 		return nil, errNotFound
 	}
@@ -95,13 +97,13 @@ func (h *Handler) buildExport(db *database.DB, lab *Lab) (*Export, error) {
 	if err != nil {
 		return nil, err
 	}
-	imgDirs, err := imageDirs(db)
-	if err != nil {
-		return nil, err
-	}
-	for _, fd := range fl.Devices {
+	devRef := map[string]int64{}
+	netRef := map[string]int64{}
+	for i, fd := range fl.Devices {
+		ref := int64(i + 1)
+		devRef[fd.Name] = ref
 		d := ExpDevice{
-			Ref: fd.ID, Name: fd.Name, Template: tplNames[fd.TemplateID], Image: imgDirs[fd.ImageID],
+			Ref: ref, Name: fd.Name, Template: tplNames[fd.TemplateID], Image: fd.ImageID,
 			X: fd.X, Y: fd.Y,
 			Params: Params{Arch: fd.Arch, Machine: fd.Machine, CPU: fd.CPU, RAMMB: fd.RAMMB, NICs: fd.NICs, NICModel: fd.NICModel,
 				IfaceType: fd.IfaceType, IfaceStart: fd.IfaceStart, DiskBus: fd.DiskBus, BIOS: fd.BIOS, Console: fd.Console, ExtraArgs: fd.ExtraArgs},
@@ -115,12 +117,14 @@ func (h *Handler) buildExport(db *database.DB, lab *Lab) (*Export, error) {
 		}
 		e.Devices = append(e.Devices, d)
 	}
-	for _, fn := range fl.Networks {
-		n := networkView(fn, lab.ID)
-		e.Networks = append(e.Networks, ExpNetwork{Ref: n.ID, Name: n.Name, Type: n.Type, DHCP: n.DHCP, HostIface: n.HostIface, X: n.X, Y: n.Y})
+	for i, fn := range fl.Networks {
+		ref := int64(i + 1)
+		netRef[fn.Name] = ref
+		n := networkView(fn, lab.Name)
+		e.Networks = append(e.Networks, ExpNetwork{Ref: ref, Name: n.Name, Type: n.Type, DHCP: n.DHCP, HostIface: n.HostIface, X: n.X, Y: n.Y})
 	}
 	for _, c := range fl.Connections {
-		e.Connections = append(e.Connections, ExpConn{c.A.Type, c.A.ID, c.A.If, c.B.Type, c.B.ID, c.B.If})
+		e.Connections = append(e.Connections, ExpConn{c.A.Type, devRef[c.A.Name] + netRef[c.A.Name], c.A.If, c.B.Type, devRef[c.B.Name] + netRef[c.B.Name], c.B.If})
 	}
 	return e, nil
 }
@@ -134,40 +138,31 @@ func templateNames(db *database.DB) (map[int64]string, error) {
 	return out, nil
 }
 
-// imageDirs returns image folder names by number.
-func imageDirs(db *database.DB) (map[int64]string, error) {
-	out := map[int64]string{}
-	for _, im := range db.Catalog.Images() {
-		out[im.ID] = im.Dirname
-	}
-	return out, nil
-}
-
 // importIcon validates the machine picture from the export file. An invalid picture does not abort the import:
 // the machine gets the standard icon, and the reason goes into the warnings.
-func (h *Handler) importIcon(d ExpDevice, dn string) (string, string, []string) {
-	var warns []string
+func (h *Handler) importIcon(d ExpDevice, dn string) (string, string, []msgs.Message) {
+	var warns []msgs.Message
 	icon := d.Icon
 	if icon != "" && !DeviceIcons[icon] {
-		warns = append(warns, fmt.Sprintf("иконка %q для %s не поддерживается — выбрана автоматически", icon, dn))
+		warns = append(warns, msgs.M("Icon {icon} for {device} is not supported — chosen automatically", map[string]string{"icon": strconv.Quote(icon), "device": dn}))
 		icon = ""
 	}
 	custom := ""
 	if d.IconPNG != "" {
 		if len(d.IconPNG) > icons.MaxBytes*4/3+8 {
-			warns = append(warns, fmt.Sprintf("иконка для %s слишком большая — выбрана автоматически", dn))
+			warns = append(warns, msgs.M("Icon for {device} is too large — chosen automatically", map[string]string{"device": dn}))
 		} else if raw, err := base64.StdEncoding.DecodeString(d.IconPNG); err != nil {
-			warns = append(warns, fmt.Sprintf("иконка для %s повреждена — выбрана автоматически", dn))
+			warns = append(warns, msgs.M("Icon for {device} is damaged — chosen automatically", map[string]string{"device": dn}))
 		} else if clean, info, err := icons.Clean(raw); err != nil {
-			warns = append(warns, fmt.Sprintf("иконка для %s не принята: %v — выбрана автоматически", dn, err))
+			warns = append(warns, msgs.M("Icon for {device} was not accepted: {detail} — chosen automatically", map[string]string{"device": dn, "detail": err.Error()}))
 		} else if err := h.Icons.Save(clean, info.Hash); err != nil {
-			warns = append(warns, fmt.Sprintf("иконка для %s не сохранена — выбрана автоматически", dn))
+			warns = append(warns, msgs.M("Icon for {device} was not saved — chosen automatically", map[string]string{"device": dn}))
 		} else {
 			custom = info.Hash
 		}
 	}
 	if icon == "custom" && custom == "" {
-		warns = append(warns, fmt.Sprintf("своя иконка для %s не загружена — выбрана автоматически", dn))
+		warns = append(warns, msgs.M("Custom icon for {device} was not uploaded — chosen automatically", map[string]string{"device": dn}))
 		icon = ""
 	}
 	return icon, custom, warns
@@ -175,20 +170,23 @@ func (h *Handler) importIcon(d ExpDevice, dn string) (string, string, []string) 
 
 // importLab creates a new lab from the description. All values go through the same validation as in the API.
 // The lab is written in one file: either all its objects or nothing.
-func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name string) (int64, []string, error) {
-	var warns []string
+func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name string) (string, []msgs.Message, error) {
+	var warns []msgs.Message
 	if e.Format != "netrave-lab" || e.Version != 1 {
-		return 0, nil, errors.New("неизвестный формат файла (ожидается netrave-lab версии 1)")
+		return "", nil, errors.New("Unknown file format (netrave-lab version 1 expected)")
 	}
 	if len(e.Devices) > 500 || len(e.Networks) > 200 || len(e.Connections) > 2000 {
-		return 0, nil, errors.New("слишком большая лаборатория")
+		return "", nil, errors.New("The laboratory is too large")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "imported-lab"
 	}
-	if msg := checkLabText(name, e.Description); msg != "" {
-		return 0, nil, errors.New(msg)
+	if err := checkLabText(name, e.Description); err != nil {
+		return "", nil, err
+	}
+	if _, exists := db.Labs.Lab(name); exists {
+		return "", nil, msgs.New("A laboratory with this name already exists", nil)
 	}
 	canvas := "{}"
 	if e.Canvas != nil {
@@ -208,15 +206,15 @@ func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name stri
 	}
 
 	names := map[string]bool{}
-	devMap := map[int64]int64{} // reference from the file -> device number
-	devNICs := map[int64]int{}
+	devMap := map[string]string{} // reference from the file -> device name
+	devNICs := map[string]int{}
 	for _, d := range e.Devices {
 		p := d.Params
 		if err := p.Validate(); err != nil {
-			return 0, nil, fmt.Errorf("устройство %q: %v", d.Name, err)
+			return "", nil, msgs.Wrap(err, "Device «{name}»: {detail}", map[string]string{"name": d.Name, "detail": err.Error()})
 		}
-		if !nameRe.MatchString(d.Name) {
-			return 0, nil, fmt.Errorf("недопустимое имя устройства %q", d.Name)
+		if !validName(d.Name) {
+			return "", nil, msgs.New("Invalid device name «{name}»", map[string]string{"name": d.Name})
 		}
 		dn := d.Name
 		if names[dn] {
@@ -224,7 +222,7 @@ func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name stri
 		}
 		names[dn] = true
 		var tplID int64
-		var imgID *int64
+		var imgID *string
 		if d.Template != "" {
 			for _, t := range db.Catalog.Templates() {
 				if t.Name == d.Template {
@@ -237,37 +235,37 @@ func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name stri
 			found := false
 			for _, im := range db.Catalog.Images() {
 				if im.Dirname == d.Image {
-					id := im.ID
-					imgID, found = &id, true
+					dir := im.Dirname
+					imgID, found = &dir, true
 					break
 				}
 			}
 			if !found {
-				warns = append(warns, fmt.Sprintf("образ %q для %s не найден — выберите его вручную", d.Image, dn))
+				warns = append(warns, msgs.M("Image {image} for {device} not found — choose it manually", map[string]string{"image": strconv.Quote(d.Image), "device": dn}))
 			}
 		}
-		fd := newDevice(0, tplID, imgID, dn, d.X, d.Y, p)
-		fd.ID = db.Labs.NewID()
+		fd := newDevice("", tplID, imgID, dn, d.X, d.Y, p)
 		icon, custom, iw := h.importIcon(d, dn)
 		warns = append(warns, iw...)
 		fd.Icon, fd.CustomIcon = icon, custom
 		if validIconSize(d.IconSize) {
 			fd.IconSize = d.IconSize
 		} else if d.IconSize != 0 {
-			warns = append(warns, fmt.Sprintf("размер иконки %s вне диапазона — используется размер по умолчанию", dn))
+			warns = append(warns, msgs.M("Icon size of {device} is out of range — default size used", map[string]string{"device": dn}))
 		}
-		devMap[d.Ref] = fd.ID
-		devNICs[d.Ref] = p.NICs
+		ref := strconv.FormatInt(d.Ref, 10)
+		devMap[ref] = fd.Name
+		devNICs[ref] = p.NICs
 		fl.Devices = append(fl.Devices, fd)
 	}
 
-	netMap := map[int64]int64{}
+	netMap := map[string]string{}
 	for _, n := range e.Networks {
 		if n.Type != "isolated" && n.Type != "nat" && n.Type != "cloud" {
-			return 0, nil, fmt.Errorf("недопустимый тип сети %q", n.Type)
+			return "", nil, msgs.New("Invalid network type «{type}»", map[string]string{"type": n.Type})
 		}
-		if !nameRe.MatchString(n.Name) {
-			return 0, nil, fmt.Errorf("недопустимое имя сети %q", n.Name)
+		if !validName(n.Name) {
+			return "", nil, msgs.New("Invalid network name «{name}»", map[string]string{"name": n.Name})
 		}
 		nn := n.Name
 		if names[nn] {
@@ -282,69 +280,69 @@ func (h *Handler) importLab(db *database.DB, ownerID int64, e *Export, name stri
 		}
 		if n.Type == "cloud" && n.HostIface != "" {
 			if !ifaceRe.MatchString(n.HostIface) {
-				return 0, nil, fmt.Errorf("недопустимое имя интерфейса %q", n.HostIface)
+				return "", nil, msgs.New("Invalid interface name «{name}»", map[string]string{"name": n.HostIface})
 			}
 			net.HostIface = n.HostIface
 		}
 		fn := newNetwork(net, n.X, n.Y)
-		fn.ID = db.Labs.NewID()
-		netMap[n.Ref] = fn.ID
+		netMap[strconv.FormatInt(n.Ref, 10)] = fn.Name
 		fl.Networks = append(fl.Networks, fn)
 	}
 
 	used := map[string]bool{}
 	for _, c := range e.Connections {
-		var ids [2]int64
+		var names [2]string
 		for i, ep := range []struct {
 			t   string
 			ref int64
 			ifc int
 		}{{c.AType, c.ARef, c.AIf}, {c.BType, c.BRef, c.BIf}} {
+			ref := strconv.FormatInt(ep.ref, 10)
 			switch ep.t {
 			case "device":
-				id, ok := devMap[ep.ref]
-				if !ok || ep.ifc < 0 || ep.ifc >= devNICs[ep.ref] {
-					return 0, nil, errors.New("некорректное соединение в файле")
+				name, ok := devMap[ref]
+				if !ok || ep.ifc < 0 || ep.ifc >= devNICs[ref] {
+					return "", nil, errors.New("Invalid connection in the file")
 				}
-				key := fmt.Sprintf("d%d/%d", id, ep.ifc)
+				key := fmt.Sprintf("d%s/%d", name, ep.ifc)
 				if used[key] {
-					return 0, nil, errors.New("интерфейс устройства используется в двух соединениях")
+					return "", nil, errors.New("The device interface is used in two connections")
 				}
 				used[key] = true
-				ids[i] = id
+				names[i] = name
 			case "network":
-				id, ok := netMap[ep.ref]
+				name, ok := netMap[ref]
 				if !ok {
-					return 0, nil, errors.New("некорректное соединение в файле")
+					return "", nil, errors.New("Invalid connection in the file")
 				}
-				ids[i] = id
+				names[i] = name
 			default:
-				return 0, nil, errors.New("некорректное соединение в файле")
+				return "", nil, errors.New("Invalid connection in the file")
 			}
 		}
 		if c.AType == "network" && c.BType == "network" {
-			return 0, nil, errors.New("соединение сеть—сеть не поддерживается")
+			return "", nil, errors.New("Network-to-network connection is not supported")
 		}
 		fl.Connections = append(fl.Connections, labfile.Connection{
-			A: labfile.End{Type: c.AType, ID: ids[0], If: c.AIf},
-			B: labfile.End{Type: c.BType, ID: ids[1], If: c.BIf},
+			A: labfile.End{Type: c.AType, Name: names[0], If: c.AIf},
+			B: labfile.End{Type: c.BType, Name: names[1], If: c.BIf},
 		})
 	}
 	saved, err := db.Labs.Save(fl)
 	if err != nil {
-		return 0, nil, err
+		return "", nil, err
 	}
-	return saved.ID, warns, nil
+	return saved.Name, warns, nil
 }
 
 // runImport creates a lab from the description under the shared topology lock.
-func (h *Handler) runImport(w http.ResponseWriter, ownerID int64, e *Export, name string) (int64, []string, bool) {
+func (h *Handler) runImport(w http.ResponseWriter, ownerID int64, e *Export, name string) (string, []msgs.Message, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	id, warns, err := h.importLab(h.DB, ownerID, e, name)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, err.Error())
-		return 0, nil, false
+		httpx.ErrFrom(w, http.StatusBadRequest, err)
+		return "", nil, false
 	}
 	h.changed()
 	return id, warns, true
@@ -357,38 +355,38 @@ func (h *Handler) exportHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.buildExport(h.DB, lab)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка экспорта")
+		httpx.Err(w, http.StatusInternalServerError, "Export error")
 		return
 	}
-	data, err := yaml.Marshal(e)
+	data, err := yamlfmt.Marshal(e)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка экспорта")
+		httpx.Err(w, http.StatusInternalServerError, "Export error")
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="netrave-lab-%d.yaml"`, lab.ID))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="netrave-lab-%s.yaml"`, slugFile(lab.Name)))
 	_, _ = w.Write(data)
 	h.audit(r, "lab_export", lab.Name)
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, lab.OwnerID, notify.Success, notify.CatBackup, "Резервная копия лаборатории создана",
-			"«"+lab.Name+"» экспортирована в файл.", "/labs/"+strconv.FormatInt(lab.ID, 10)+"/editor")
+		h.Notify.Activity(ss.User.ID, lab.OwnerID, notify.Success, notify.CatBackup, "Laboratory backup created",
+			"«{name}» exported to a file.", labLink(lab.Name), notify.P("name", lab.Name))
 	}
 }
 
 func (h *Handler) importHandler(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	if !h.canCreateLab(ss.User) {
-		httpx.Err(w, http.StatusForbidden, "нет права: создание лабораторий")
+		httpx.Err(w, http.StatusForbidden, "No permission: creating laboratories")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8<<20))
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "файл слишком большой или не читается")
+		httpx.Err(w, http.StatusBadRequest, "The file is too large or cannot be read")
 		return
 	}
 	var e Export
 	if err := yaml.Unmarshal(body, &e); err != nil {
-		httpx.Err(w, http.StatusBadRequest, "файл не разобран как YAML: "+err.Error())
+		httpx.ErrKey(w, http.StatusBadRequest, "File could not be parsed as YAML: {detail}", map[string]string{"detail": err.Error()})
 		return
 	}
 	id, warns, ok := h.runImport(w, ss.User.ID, &e, e.Name)
@@ -396,8 +394,41 @@ func (h *Handler) importHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "lab_import", e.Name)
-	h.Notify.Activity(ss.User.ID, 0, notify.Success, notify.CatBackup, "Лаборатория восстановлена из копии", "«"+e.Name+"» добавлена в список.", "/labs/"+strconv.FormatInt(id, 10)+"/editor")
+	h.Notify.Activity(ss.User.ID, 0, notify.Success, notify.CatBackup, "Laboratory restored from a backup", "«{name}» added to the list.", labLink(id), notify.P("name", e.Name))
 	httpx.JSON(w, http.StatusCreated, map[string]any{"id": id, "warnings": warns})
+}
+
+// slugFile builds a safe file name from a lab name.
+func slugFile(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+		if b.Len() >= 60 {
+			break
+		}
+	}
+	if b.Len() == 0 {
+		return "lab"
+	}
+	return b.String()
+}
+
+// copyName returns the name of a copy: the lab name with the first free number from 2 ("lab 2").
+func copyName(db *database.DB, base string) string {
+	cand := base + " 2"
+	for n := 3; n < 10000; n++ {
+		_, exists := db.Labs.Lab(cand)
+		if !exists && !db.NameTakenAtRoot(cand, "") {
+			return cand
+		}
+		cand = base + " " + strconv.Itoa(n)
+	}
+	return cand
 }
 
 func (h *Handler) copyLab(w http.ResponseWriter, r *http.Request) {
@@ -408,14 +439,14 @@ func (h *Handler) copyLab(w http.ResponseWriter, r *http.Request) {
 	}
 	e, err := h.buildExport(h.DB, lab)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка копирования")
+		httpx.Err(w, http.StatusInternalServerError, "Copy error")
 		return
 	}
-	id, _, ok := h.runImport(w, ss.User.ID, e, lab.Name+" (копия)")
+	id, _, ok := h.runImport(w, ss.User.ID, e, copyName(h.DB, lab.Name))
 	if !ok {
 		return
 	}
 	h.audit(r, "lab_copy", lab.Name)
-	h.Notify.Send(ss.User.ID, notify.Success, "lab", "Копия лаборатории создана", "«"+lab.Name+"» скопирована в вашу копию: это отдельная лаборатория.", "/labs/"+strconv.FormatInt(id, 10)+"/editor")
+	h.Notify.Send(ss.User.ID, notify.Success, "lab", "Copy of laboratory created", "«{name}» was copied to your copy: this is a separate laboratory.", labLink(id), notify.P("name", lab.Name))
 	httpx.JSON(w, http.StatusCreated, map[string]any{"id": id})
 }

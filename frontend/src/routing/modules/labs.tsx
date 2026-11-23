@@ -10,6 +10,10 @@ import { paths } from '../paths';
 // by the same screen (see LabByNamePage).
 export const editorRoutes: RouteObject[] = [
   {
+    path: '/labs/:labName/editor',
+    lazy: () => import('../../features/editor/LabByNamePage').then((m) => ({ Component: m.LabByNamePage })),
+  },
+  {
     path: '/labs/:folderName/:labName',
     lazy: () => import('../../features/editor/LabByNamePage').then((m) => ({ Component: m.LabByNamePage })),
   },

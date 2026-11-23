@@ -4,7 +4,7 @@ import { useNotificationsStore } from '../../stores/notifications';
 import { catLabel, levelIcon } from './labels';
 import { Icon } from '../../components/Icon';
 import { fmtTime } from '../../lib/format';
-import { t, useLanguageStore } from '../../i18n';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
 import type { NotificationItem } from '../../types/api';
 
 const PAGE_SIZE = 20;
@@ -114,9 +114,9 @@ export function NotificationsPanel() {
               <button type="button" className="block min-h-0 min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-left text-inherit hover:border-transparent hover:bg-transparent" onClick={() => openItem(item)}>
                 <span data-notification-title className={`flex items-center gap-[7px] [overflow-wrap:anywhere] ${item.read ? 'font-semibold' : 'font-bold'}`}>
                   {!item.read && <i className="inline-block size-[7px] flex-none rounded-full bg-accent" aria-hidden="true" />}
-                  {item.title}
+                  {translateMessage(item.title, item.params)}
                 </span>
-                {item.body && <span className="mt-0.5 block text-[13px] text-muted [overflow-wrap:anywhere]">{item.body}</span>}
+                {item.body && <span className="mt-0.5 block text-[13px] text-muted [overflow-wrap:anywhere]">{translateMessage(item.body, item.params)}</span>}
                 <span data-notification-meta className="mt-[5px] flex flex-wrap items-center gap-1.5 text-[11.5px] text-muted">
                   <span className="font-semibold text-accent-2">{catLabel(categories, item.category)}</span>
                   <span aria-hidden="true">·</span>

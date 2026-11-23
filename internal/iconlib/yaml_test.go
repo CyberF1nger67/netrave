@@ -51,11 +51,11 @@ func TestLibraryLivesInYAML(t *testing.T) {
 
 	first, created, err := Remember(db, st, uid, info, "Роутер")
 	if err != nil || !created {
-		t.Fatalf("первая запись: created=%v err=%v", created, err)
+		t.Fatalf("first record: created=%v err=%v", created, err)
 	}
 	again, created, err := Remember(db, st, uid, info, "Другое")
 	if err != nil || created || again.ID != first.ID {
-		t.Fatalf("повтор должен вернуть ту же запись: %+v created=%v err=%v", again, created, err)
+		t.Fatalf("repeat must return same record: %+v created=%v err=%v", again, created, err)
 	}
 
 	raw, err := os.ReadFile(filepath.Join(st.LibraryDir(), strconv.FormatInt(uid, 10)+".yaml"))
@@ -63,28 +63,28 @@ func TestLibraryLivesInYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(raw), "file: "+info.Hash+".png") {
-		t.Fatalf("путь к картинке должен быть в YAML:\n%s", raw)
+		t.Fatalf("picture path must be in YAML:\n%s", raw)
 	}
 
 	renamed, err := Rename(db, st, uid, first.ID, "Коммутатор")
 	if err != nil || renamed.Name != "Коммутатор" {
-		t.Fatalf("переименование: %+v %v", renamed, err)
+		t.Fatalf("rename: %+v %v", renamed, err)
 	}
 	img, err := Image(db, st, uid, first.ID)
 	if err != nil || len(img) == 0 {
-		t.Fatalf("картинка не читается: %v", err)
+		t.Fatalf("picture unreadable: %v", err)
 	}
 
 	hash, err := Delete(db, st, uid, first.ID)
 	if err != nil || hash != info.Hash {
-		t.Fatalf("удаление: %q %v", hash, err)
+		t.Fatalf("delete: %q %v", hash, err)
 	}
 	items, err := List(db, st, uid)
 	if err != nil || len(items) != 0 {
-		t.Fatalf("после удаления список пуст: %+v %v", items, err)
+		t.Fatalf("after delete list is empty: %+v %v", items, err)
 	}
 	refs, _ := st.ReferencedByLibrary()
 	if refs[info.Hash] {
-		t.Fatal("удалённая иконка не должна числиться в библиотеках")
+		t.Fatal("deleted icon must not be listed in libraries")
 	}
 }

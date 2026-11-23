@@ -54,15 +54,15 @@ func TestDeleteUserRemovesThemeAndIconLibraryFiles(t *testing.T) {
 	}
 	rec := apiCall(t, mux, tok, csrf, http.MethodDelete, "/api/users/"+itoa(gone), nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("удаление пользователя: HTTP %d %s", rec.Code, rec.Body.String())
+		t.Fatalf("deleting user: HTTP %d %s", rec.Code, rec.Body.String())
 	}
 
 	for _, dir := range []string{themesDir, libDir} {
 		if _, err := os.Stat(filepath.Join(dir, itoa(gone)+".yaml")); !os.IsNotExist(err) {
-			t.Errorf("файл удалённого пользователя остался в %s: %v", dir, err)
+			t.Errorf("file of deleted user remained in %s: %v", dir, err)
 		}
 		if _, err := os.Stat(filepath.Join(dir, itoa(keep)+".yaml")); err != nil {
-			t.Errorf("файл другого пользователя пропал в %s: %v", dir, err)
+			t.Errorf("file of another user disappeared in %s: %v", dir, err)
 		}
 	}
 }

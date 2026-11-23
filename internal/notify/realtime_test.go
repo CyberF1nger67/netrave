@@ -25,28 +25,28 @@ func TestActivityRecipients(t *testing.T) {
 	other, _, _ := e.user(t, "other", "user")
 	admin, _, _ := e.user(t, "root1", "admin")
 
-	e.svc.Activity(actor, owner, Info, CatMachine, "Машина запущена", "x", "")
+	e.svc.Activity(actor, owner, Info, CatMachine, "Machine started", "x", "")
 	count := func(uid int64) int {
 		var n int
 		n = len(e.svc.Snapshot(uid))
 		return n
 	}
 	if count(owner) != 1 {
-		t.Errorf("владелец должен получить событие: %d", count(owner))
+		t.Errorf("owner must receive the event: %d", count(owner))
 	}
 	if count(actor) != 1 {
-		t.Errorf("инициатор должен получить событие: %d", count(actor))
+		t.Errorf("initiator must receive the event: %d", count(actor))
 	}
 	if count(admin) != 1 {
-		t.Errorf("администратор должен видеть события всех пользователей: %d", count(admin))
+		t.Errorf("admin must see events of all users: %d", count(admin))
 	}
 	if count(other) != 0 {
-		t.Errorf("посторонний пользователь не должен видеть чужое событие: %d", count(other))
+		t.Errorf("unrelated user must not see the event: %d", count(other))
 	}
 	// The initiator matches the owner - one notification, no duplicate.
-	e.svc.Activity(owner, owner, Info, CatLab, "Параметры", "y", "")
+	e.svc.Activity(owner, owner, Info, CatLab, "Parameters", "y", "")
 	if count(owner) != 2 {
-		t.Errorf("дубль получателя: %d", count(owner))
+		t.Errorf("duplicate recipient: %d", count(owner))
 	}
 }
 
@@ -63,7 +63,7 @@ func TestWebSocketPushesOnlyToOwner(t *testing.T) {
 
 	// Without a cookie - rejection.
 	if code := handshakeCode(t, addr, "", ""); code != 401 {
-		t.Fatalf("без cookie ожидался 401, получено %d", code)
+		t.Fatalf("without cookie expected 401, got %d", code)
 	}
 
 	conn := dialWS(t, addr, otok)
@@ -71,7 +71,7 @@ func TestWebSocketPushesOnlyToOwner(t *testing.T) {
 	// 101 is sent to the client before the connection reaches the hub; without waiting the event may be dropped.
 	waitConnected(t, e.svc, owner)
 
-	e.svc.Activity(owner, 0, Warning, CatMachine, "Машина аварийно завершилась", "станция-1", "#/lab/1")
+	e.svc.Activity(owner, 0, Warning, CatMachine, "Machine crashed", "station-1", "#/lab/1")
 
 	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	msg := readTextFrame(t, conn)
@@ -85,10 +85,10 @@ func TestWebSocketPushesOnlyToOwner(t *testing.T) {
 		} `json:"item"`
 	}
 	if err := json.Unmarshal(msg, &m); err != nil {
-		t.Fatalf("некорректное сообщение: %v (%s)", err, msg)
+		t.Fatalf("invalid message: %v (%s)", err, msg)
 	}
-	if m.Type != "new" || m.Unread != 1 || m.Item.Title != "Машина аварийно завершилась" || m.Item.Category != CatMachine {
-		t.Fatalf("неожиданное сообщение: %+v", m)
+	if m.Type != "new" || m.Unread != 1 || m.Item.Title != "Machine crashed" || m.Item.Category != CatMachine {
+		t.Fatalf("unexpected message: %+v", m)
 	}
 }
 
@@ -131,7 +131,7 @@ func dialWS(t *testing.T, addr, token string) net.Conn {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != 101 {
-		t.Fatalf("рукопожатие: %d", resp.StatusCode)
+		t.Fatalf("handshake: %d", resp.StatusCode)
 	}
 	return &bufConn{Conn: c, r: br}
 }
@@ -147,10 +147,10 @@ func readTextFrame(t *testing.T, c net.Conn) []byte {
 	t.Helper()
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(c, hdr); err != nil {
-		t.Fatalf("чтение фрейма: %v", err)
+		t.Fatalf("reading frame: %v", err)
 	}
 	if hdr[0]&0x0f != 0x1 {
-		t.Fatalf("ожидался текстовый фрейм, код %x", hdr[0]&0x0f)
+		t.Fatalf("expected text frame, opcode %x", hdr[0]&0x0f)
 	}
 	n := int(hdr[1] & 0x7f)
 	switch n {
@@ -176,7 +176,7 @@ func waitConnected(t *testing.T, svc *Service, uid int64) {
 	deadline := time.Now().Add(2 * time.Second)
 	for !svc.hub.connected(uid) {
 		if time.Now().After(deadline) {
-			t.Fatal("соединение не зарегистрировано в hub")
+			t.Fatal("connection not registered in hub")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

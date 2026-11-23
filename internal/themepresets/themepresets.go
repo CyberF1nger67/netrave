@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+	"netrave/internal/msgs"
 )
 
 // embedded holds the ready-made user themes. They are written to the themes directory once,
@@ -114,22 +115,6 @@ func Load(dir string) (Catalog, error) {
 	return load(dir)
 }
 
-// IDs returns the identifiers of all themes stored in dir.
-func IDs(dir string) map[string]bool {
-	catalog, err := Load(dir)
-	if err != nil {
-		return map[string]bool{}
-	}
-	out := make(map[string]bool, len(catalog.Standard)+len(catalog.Presets))
-	for _, item := range catalog.Standard {
-		out[item.ID] = true
-	}
-	for _, item := range catalog.Presets {
-		out[item.ID] = true
-	}
-	return out
-}
-
 // seed writes the ready-made themes into dir, but only when dir does not exist yet.
 func seed(dir string) error {
 	if _, err := os.Stat(dir); err == nil {
@@ -193,7 +178,7 @@ func load(dir string) (Catalog, error) {
 			return Catalog{}, fmt.Errorf("%s: %w", name, err)
 		}
 		if seen[item.ID] {
-			return Catalog{}, fmt.Errorf("%s: повторяющийся идентификатор темы %q", name, item.ID)
+			return Catalog{}, msgs.New("{file}: duplicate theme id «{id}»", map[string]string{"file": name, "id": item.ID})
 		}
 		seen[item.ID] = true
 		out.Presets = append(out.Presets, item)
@@ -203,29 +188,29 @@ func load(dir string) (Catalog, error) {
 
 func validate(item Theme) error {
 	if !idRe.MatchString(item.ID) {
-		return fmt.Errorf("некорректный идентификатор темы %q", item.ID)
+		return msgs.New("Invalid theme id «{id}»", map[string]string{"id": item.ID})
 	}
 	name := strings.TrimSpace(item.Name)
 	if name == "" || len([]rune(name)) > 40 {
-		return fmt.Errorf("название темы %q: от 1 до 40 символов", item.ID)
+		return msgs.New("Theme name «{id}»: from 1 to 40 characters", map[string]string{"id": item.ID})
 	}
 	if item.Base != "dark" && item.Base != "light" {
-		return fmt.Errorf("тема %q: неизвестная основа %q", item.ID, item.Base)
+		return msgs.New("Theme «{id}»: unknown base «{base}»", map[string]string{"id": item.ID, "base": item.Base})
 	}
 	if len(item.Colors) != len(ColorKeys) {
-		return fmt.Errorf("тема %q: должен быть задан весь набор цветов", item.ID)
+		return msgs.New("Theme «{id}»: the full set of colors must be given", map[string]string{"id": item.ID})
 	}
 	for key, value := range item.Colors {
 		if !colorSet[key] {
-			return fmt.Errorf("тема %q: неизвестный цвет %q", item.ID, key)
+			return msgs.New("Theme «{id}»: unknown color «{color}»", map[string]string{"id": item.ID, "color": key})
 		}
 		if !hexRe.MatchString(value) {
-			return fmt.Errorf("тема %q: некорректный цвет %q", item.ID, key)
+			return msgs.New("Theme «{id}»: invalid color «{color}»", map[string]string{"id": item.ID, "color": key})
 		}
 	}
 	for _, key := range ColorKeys {
 		if _, ok := item.Colors[key]; !ok {
-			return fmt.Errorf("тема %q: отсутствует цвет %q", item.ID, key)
+			return msgs.New("Theme «{id}»: color «{color}» is missing", map[string]string{"id": item.ID, "color": key})
 		}
 	}
 	return nil

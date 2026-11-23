@@ -201,8 +201,10 @@ func (s *server) startChild() (*exec.Cmd, error) {
 		args = append(args,
 			"--addr", s.cfg.Addr,
 			"--data", s.cfg.DataDir,
-			"--images", s.cfg.ImagesDir,
+			"--disks", s.cfg.DisksDir,
 			"--labs", s.cfg.LabsDir,
+			"--instances", s.cfg.InstancesDir,
+			"--logs", s.cfg.LogsDir,
 			"--icons", s.cfg.IconsDir,
 			"--db", s.cfg.DBPath,
 			"--qemu", s.cfg.QEMUPath,
@@ -373,8 +375,9 @@ func Background(cfg *config.Config) error {
 	if cfg.ConfigPath != "" {
 		args = append(args, "--config", cfg.ConfigPath)
 	} else {
-		args = append(args, "--addr", cfg.Addr, "--data", cfg.DataDir, "--images", cfg.ImagesDir,
-			"--labs", cfg.LabsDir, "--icons", cfg.IconsDir, "--db", cfg.DBPath, "--qemu", cfg.QEMUPath,
+		args = append(args, "--addr", cfg.Addr, "--data", cfg.DataDir, "--disks", cfg.DisksDir,
+			"--labs", cfg.LabsDir, "--instances", cfg.InstancesDir, "--logs", cfg.LogsDir,
+			"--icons", cfg.IconsDir, "--db", cfg.DBPath, "--qemu", cfg.QEMUPath,
 			"--socket", cfg.SocketPath, "--log", cfg.LogFile, "--restart-sec", strconv.Itoa(cfg.RestartSec))
 	}
 	cmd := exec.Command(executable, args...)

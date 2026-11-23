@@ -10,6 +10,7 @@ import (
 
 	"netrave/internal/auth"
 	"netrave/internal/database"
+	"netrave/internal/labfile"
 	"netrave/internal/labtest"
 	"netrave/internal/qemu"
 )
@@ -28,17 +29,17 @@ func TestRunningStatusIgnoresOtherUsersIdleInstance(t *testing.T) {
 
 	var out []RunningLab
 	rec := e.do(t, admin, http.MethodGet, "/api/labs/running", nil)
-	expect(t, rec, http.StatusOK, "список запущенных")
+	expect(t, rec, http.StatusOK, "running list")
 	decodeJSON(t, rec.Body.Bytes(), &out)
 	if len(out) != 1 {
-		t.Fatalf("ожидалась одна запущенная лаборатория, получено %d", len(out))
+		t.Fatalf("want one running lab, got %d", len(out))
 	}
 	l := out[0]
 	if l.Devices != 1 {
-		t.Errorf("в лаборатории одна машина, сводка показывает %d (считаются машины всех экземпляров)", l.Devices)
+		t.Errorf("the lab has one machine, the summary shows %d (machines of all instances are counted)", l.Devices)
 	}
 	if l.Status != "running" {
-		t.Errorf("единственная машина владельца запущена, статус должен быть running, а не %q", l.Status)
+		t.Errorf("the owner's only machine is running, status must be running, not %q", l.Status)
 	}
 }
 
@@ -64,7 +65,7 @@ func TestWipeOwnInstanceLeavesOtherInstancesAlone(t *testing.T) {
 	u2 := e.user(t, "u2", "user")
 	lab := e.lab(t, owner.id)
 	d1 := e.device(t, lab)
-	d2 := e.device(t, lab)
+	d2 := labtest.Device(t, e.db, lab, labfile.Device{Name: "pc2"})
 
 	ownerRID := e.runInstance(t, lab, d1, owner.id, "running", os.Getpid(), 1000)
 	u2RID1 := e.runInstance(t, lab, d1, u2.id, "stopped", 0, 0)
@@ -73,15 +74,15 @@ func TestWipeOwnInstanceLeavesOtherInstancesAlone(t *testing.T) {
 	labtest.Perm(t, e.db, lab, u2.id, "lab.view", true)
 	labtest.Perm(t, e.db, lab, u2.id, "lab.wipe", true)
 
-	expect(t, e.do(t, u2, http.MethodPost, "/api/labs/"+itoa(lab)+"/wipe", nil), http.StatusOK, "wipe своего экземпляра")
+	expect(t, e.do(t, u2, http.MethodPost, "/api/labs/"+labPath(lab)+"/wipe", nil), http.StatusOK, "wipe of own instance")
 
 	want := map[int64]bool{u2RID1: true, u2RID2: true}
 	if len(wiped) != len(want) {
-		t.Fatalf("должны сброситься только машины u2 (%v), сброшено %v", want, wiped)
+		t.Fatalf("only u2's machines should be wiped (%v), wiped %v", want, wiped)
 	}
 	for _, id := range wiped {
 		if !want[id] {
-			t.Errorf("сброшена чужая машина rid=%d (машина владельца rid=%d)", id, ownerRID)
+			t.Errorf("another user's machine was wiped rid=%d (owner's machine rid=%d)", id, ownerRID)
 		}
 	}
 }
@@ -106,7 +107,7 @@ func TestWipeRejectsInstanceFromAnotherLab(t *testing.T) {
 
 	owner := e.user(t, "owner", "user")
 	labA := e.lab(t, owner.id)
-	labB := e.lab(t, owner.id)
+	labB := e.namedLab(t, owner.id, "labB")
 	devA := e.device(t, labA)
 	devB := e.device(t, labB)
 	aRID := e.runInstance(t, labA, devA, owner.id, "stopped", 0, 1000)
@@ -116,10 +117,10 @@ func TestWipeRejectsInstanceFromAnotherLab(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+itoa(labA)+"/wipe?instance="+itoa(bInst), nil)
-	expect(t, rec, http.StatusNotFound, "чужой экземпляр в Wipe")
+	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+labPath(labA)+"/wipe?instance="+itoa(bInst), nil)
+	expect(t, rec, http.StatusNotFound, "foreign instance in Wipe")
 	if len(wiped) != 0 {
-		t.Fatalf("Wipe чужой лаборатории сбросил машины %v", wiped)
+		t.Fatalf("Wipe of a foreign lab wiped machines %v", wiped)
 	}
 	for rid, want := range map[int64]int64{aRID: 1000, bRID: 2000} {
 		var started int64
@@ -127,7 +128,7 @@ func TestWipeRejectsInstanceFromAnotherLab(t *testing.T) {
 			t.Fatal(err)
 		}
 		if started != want {
-			t.Errorf("машина %d: история запуска изменилась (%d вместо %d)", rid, started, want)
+			t.Errorf("machine %d: start history changed (%d instead of %d)", rid, started, want)
 		}
 	}
 }
@@ -154,40 +155,40 @@ func TestWipeOneInstanceKeepsOtherInstancesInRunningList(t *testing.T) {
 		t.Helper()
 		var out []RunningLab
 		rec := e.do(t, u, http.MethodGet, "/api/labs/running", nil)
-		expect(t, rec, http.StatusOK, "список запущенных")
+		expect(t, rec, http.StatusOK, "running list")
 		decodeJSON(t, rec.Body.Bytes(), &out)
 		return out
 	}
 	if rows := fetch(admin); len(rows) != 2 {
-		t.Fatalf("до Wipe должны быть видны оба экземпляра: %+v", rows)
+		t.Fatalf("before Wipe both instances must be visible: %+v", rows)
 	}
 
 	// The administrator wipes only u2's instance.
-	rec := e.do(t, admin, http.MethodPost, "/api/labs/"+itoa(lab)+"/wipe?instance="+itoa(u2Inst), nil)
-	expect(t, rec, http.StatusOK, "Wipe выбранного экземпляра")
+	rec := e.do(t, admin, http.MethodPost, "/api/labs/"+labPath(lab)+"/wipe?instance="+itoa(u2Inst), nil)
+	expect(t, rec, http.StatusOK, "Wipe of the selected instance")
 
 	rows := fetch(admin)
 	if len(rows) != 1 || rows[0].InstanceUser != "owner" {
-		t.Fatalf("после Wipe одного экземпляра должен остаться только экземпляр владельца: %+v", rows)
+		t.Fatalf("after Wipe of one instance only the owner's instance must remain: %+v", rows)
 	}
 	if rows[0].StartedAt != 1000 {
-		t.Errorf("история запуска чужого экземпляра изменилась: %d", rows[0].StartedAt)
+		t.Errorf("start history of another instance changed: %d", rows[0].StartedAt)
 	}
 	if rows[0].WipedAt != 0 || rows[0].Status == "wiped" {
-		t.Errorf("Wipe другого экземпляра пометил этот экземпляр сброшенным: %+v", rows[0])
+		t.Errorf("Wipe of another instance marked this instance as wiped: %+v", rows[0])
 	}
 	if got := fetch(owner); len(got) != 1 || got[0].InstanceUser != "owner" {
-		t.Errorf("владелец потерял свой экземпляр после Wipe чужого: %+v", got)
+		t.Errorf("owner lost their instance after Wipe of another instance: %+v", got)
 	}
 	if got := fetch(u2); len(got) != 0 {
-		t.Errorf("сброшенный экземпляр должен исчезнуть из списка: %+v", got)
+		t.Errorf("wiped instance must disappear from the list: %+v", got)
 	}
 	var started int64
 	if err := e.db.QueryRow(`SELECT started_at FROM instance_devices WHERE id=?`, ownerRID).Scan(&started); err != nil {
 		t.Fatal(err)
 	}
 	if started != 1000 {
-		t.Errorf("Wipe чужого экземпляра стёр историю запуска: %d", started)
+		t.Errorf("Wipe of another instance erased start history: %d", started)
 	}
 }
 
@@ -215,36 +216,36 @@ func TestRunningListOneRowPerInstance(t *testing.T) {
 		t.Helper()
 		var out []RunningLab
 		rec := e.do(t, u, http.MethodGet, "/api/labs/running", nil)
-		expect(t, rec, http.StatusOK, "список запущенных")
+		expect(t, rec, http.StatusOK, "running list")
 		decodeJSON(t, rec.Body.Bytes(), &out)
 		return out
 	}
 
 	adminRows := byUser(fetch(admin))
 	if len(adminRows) != 2 || !adminRows["owner"].CanOpen || !adminRows["u2"].CanOpen {
-		t.Fatalf("админ должен видеть обе строки и открывать любую: %+v", adminRows)
+		t.Fatalf("admin must see both rows and open any: %+v", adminRows)
 	}
 
 	ownerRows := byUser(fetch(owner))
 	if len(ownerRows) != 2 {
-		t.Fatalf("владелец лаборатории должен видеть строки своей лаборатории, видит %d", len(ownerRows))
+		t.Fatalf("lab owner must see rows of their lab, sees %d", len(ownerRows))
 	}
 	if !ownerRows["owner"].CanOpen || ownerRows["u2"].CanOpen || ownerRows["u2"].CanStop {
-		t.Fatalf("владелец управляет только своим экземпляром: %+v", ownerRows)
+		t.Fatalf("owner manages only their own instance: %+v", ownerRows)
 	}
 
 	// A user sees only their own instance; without lab permissions they can neither open it nor manage
 	// machines. The lab owner's instance (even if opened) is not visible to them.
 	u2Rows := byUser(fetch(u2))
 	if len(u2Rows) != 1 {
-		t.Fatalf("пользователь должен видеть только свою строку, видит %d: %+v", len(u2Rows), u2Rows)
+		t.Fatalf("user must see only their own row, sees %d: %+v", len(u2Rows), u2Rows)
 	}
 	own := u2Rows["u2"]
 	if !own.Mine || !own.Own {
-		t.Fatalf("свой экземпляр должен быть помечен mine/own: %+v", own)
+		t.Fatalf("own instance must be marked mine/own: %+v", own)
 	}
 	if own.CanOpen || own.CanStart || own.CanStop || own.CanWipe {
-		t.Fatalf("без прав на лабораторию управление экземпляром должно быть запрещено: %+v", own)
+		t.Fatalf("without lab permissions managing the instance must be forbidden: %+v", own)
 	}
 }
 
@@ -254,19 +255,19 @@ func TestDeviceIconIsSavedAndValidated(t *testing.T) {
 	owner := e.user(t, "owner", "user")
 	lab := e.lab(t, owner.id)
 	dev := e.device(t, lab)
-	rid := e.runInstance(t, lab, dev, owner.id, "stopped", 0, 0)
-	path := "/api/devices/" + itoa(rid)
+	e.runInstance(t, lab, dev, owner.id, "stopped", 0, 0)
+	path := "/api/labs/" + labPath(lab) + "/devices/" + labPath(dev)
 
-	expect(t, e.do(t, owner, http.MethodPut, path, map[string]any{"icon": "router"}), http.StatusOK, "выбор картинки роутера")
+	expect(t, e.do(t, owner, http.MethodPut, path, map[string]any{"icon": "router"}), http.StatusOK, "choosing the router image")
 	var icon string
-	icon = devOf(t, e.db, dev).Icon
+	icon = devOf(t, e.db, lab, dev).Icon
 	if icon != "router" {
-		t.Fatalf("картинка не сохранилась: %q", icon)
+		t.Fatalf("image was not saved: %q", icon)
 	}
 
-	expect(t, e.do(t, owner, http.MethodPut, path, map[string]any{"icon": "toaster"}), http.StatusBadRequest, "неизвестная картинка")
-	icon = devOf(t, e.db, dev).Icon
+	expect(t, e.do(t, owner, http.MethodPut, path, map[string]any{"icon": "toaster"}), http.StatusBadRequest, "unknown image")
+	icon = devOf(t, e.db, lab, dev).Icon
 	if icon != "router" {
-		t.Fatalf("после отказа картинка должна остаться прежней, стала %q", icon)
+		t.Fatalf("after the rejection the image must stay the same, became %q", icon)
 	}
 }

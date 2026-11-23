@@ -24,6 +24,7 @@ import (
 	_ "image/jpeg" // JPEG icons are decoded and rebuilt as PNG
 	"image/png"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,8 +34,10 @@ import (
 
 	_ "golang.org/x/image/webp" // WEBP icons are decoded and rebuilt as PNG
 	"gopkg.in/yaml.v3"
+	"netrave/internal/yamlfmt"
 
 	"netrave/internal/database"
+	"netrave/internal/msgs"
 )
 
 const (
@@ -46,7 +49,7 @@ const (
 )
 
 // ErrNotFound - no icon with this hash exists in the catalog.
-var ErrNotFound = errors.New("иконка не найдена")
+var ErrNotFound = errors.New("Icon not found")
 
 var (
 	hashRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -84,28 +87,28 @@ func (i Info) FileName() string { return i.Hash + "." + i.Ext() }
 // SVG is validated and cleaned (see cleanSVG) and remains a vector.
 func Clean(data []byte) ([]byte, Info, error) {
 	if len(data) == 0 {
-		return nil, Info{}, errors.New("файл пуст")
+		return nil, Info{}, errors.New("The file is empty")
 	}
 	if len(data) > MaxBytes {
-		return nil, Info{}, fmt.Errorf("файл больше %d КБ", MaxBytes>>10)
+		return nil, Info{}, msgs.New("The file is larger than {size} KB", map[string]string{"size": fmt.Sprint(MaxBytes >> 10)})
 	}
 	if looksLikeSVG(data) {
 		return cleanSVG(data)
 	}
 	if !isRasterSignature(data) {
-		return nil, Info{}, errors.New("поддерживаются PNG, JPEG, WEBP и SVG")
+		return nil, Info{}, errors.New("PNG, JPEG, WEBP and SVG are supported")
 	}
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return nil, Info{}, fmt.Errorf("повреждённый %s: %v", formatName(data), err)
+		return nil, Info{}, msgs.Wrap(err, "Damaged {format_key} file: {detail}", map[string]string{"format_key": formatName(data), "detail": err.Error()})
 	}
 	// Sizes are checked before decoding: the decoded buffer is limited to MaxSide x MaxSide.
 	if cfg.Width < MinSide || cfg.Height < MinSide || cfg.Width > MaxSide || cfg.Height > MaxSide {
-		return nil, Info{}, fmt.Errorf("размер %d×%d: стороны от %d до %d пикселей", cfg.Width, cfg.Height, MinSide, MaxSide)
+		return nil, Info{}, msgs.New("Size {width}×{height}: sides must be from {min} to {max} pixels", map[string]string{"width": fmt.Sprint(cfg.Width), "height": fmt.Sprint(cfg.Height), "min": fmt.Sprint(MinSide), "max": fmt.Sprint(MaxSide)})
 	}
 	img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
-		return nil, Info{}, fmt.Errorf("повреждённый %s: %v", formatName(data), err)
+		return nil, Info{}, msgs.Wrap(err, "Damaged {format_key} file: {detail}", map[string]string{"format_key": formatName(data), "detail": err.Error()})
 	}
 	b := img.Bounds()
 	dst := image.NewNRGBA(image.Rect(0, 0, b.Dx(), b.Dy()))
@@ -122,10 +125,10 @@ func Clean(data []byte) ([]byte, Info, error) {
 	var buf bytes.Buffer
 	enc := png.Encoder{CompressionLevel: png.BestCompression}
 	if err := enc.Encode(&buf, dst); err != nil {
-		return nil, Info{}, fmt.Errorf("пересборка PNG: %v", err)
+		return nil, Info{}, msgs.Wrap(err, "PNG re-encoding failed: {detail}", map[string]string{"detail": err.Error()})
 	}
 	if buf.Len() > MaxBytes {
-		return nil, Info{}, fmt.Errorf("файл больше %d КБ после обработки", MaxBytes>>10)
+		return nil, Info{}, msgs.New("The file is larger than {size} KB after processing", map[string]string{"size": fmt.Sprint(MaxBytes >> 10)})
 	}
 	out := buf.Bytes()
 	sum := sha256.Sum256(out)
@@ -159,7 +162,7 @@ func formatName(data []byte) string {
 	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
 		return "WEBP"
 	default:
-		return "файл"
+		return "Image"
 	}
 }
 
@@ -216,10 +219,10 @@ func (s *Store) locate(hash string) (path, ext string, ok bool) {
 // Save writes the cleaned icon under its hash. Saving the same picture again only updates the time.
 func (s *Store) Save(clean []byte, hash string) error {
 	if s == nil || s.Dir == "" {
-		return errors.New("каталог иконок не настроен")
+		return errors.New("The icon catalog is not configured")
 	}
 	if !ValidHash(hash) {
-		return errors.New("некорректный хеш иконки")
+		return errors.New("Invalid icon hash")
 	}
 	if err := os.MkdirAll(s.Dir, 0o750); err != nil {
 		return err
@@ -361,11 +364,11 @@ func (s *Store) Sweep(db *database.DB, minAge time.Duration) error {
 }
 
 // URL returns the machine icon URL for the web interface. Empty if the machine uses the standard picture.
-func URL(labID int64, icon, custom string) string {
+func URL(labName, icon, custom string) string {
 	if icon != "custom" || !ValidHash(custom) {
 		return ""
 	}
-	return fmt.Sprintf("/api/labs/%d/icons/%s", labID, custom)
+	return "/api/labs/" + url.PathEscape(labName) + "/icons/" + custom
 }
 
 // ---------- user icon libraries (library/<owner>.yaml files) ----------
@@ -406,7 +409,7 @@ func (s *Store) ReadLibrary(owner int64) (LibraryFile, error) {
 	}
 	var f LibraryFile
 	if err := yaml.Unmarshal(data, &f); err != nil {
-		return LibraryFile{}, fmt.Errorf("библиотека %d: %w", owner, err)
+		return LibraryFile{}, msgs.Wrap(err, "Library {owner}: {detail}", map[string]string{"owner": fmt.Sprint(owner), "detail": err.Error()})
 	}
 	return f, nil
 }
@@ -416,7 +419,7 @@ func (s *Store) WriteLibrary(owner int64, f LibraryFile) error {
 	if err := os.MkdirAll(s.LibraryDir(), 0o750); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(f)
+	data, err := yamlfmt.Marshal(f)
 	if err != nil {
 		return err
 	}
@@ -489,7 +492,7 @@ func (s *Store) ReadFile(file string) ([]byte, error) {
 	ext := strings.ToLower(rawExt)
 	hash := strings.TrimSuffix(file, rawExt)
 	if (ext != ".png" && ext != ".svg") || !ValidHash(hash) || filepath.Base(file) != file {
-		return nil, errors.New("некорректный путь к картинке")
+		return nil, errors.New("Invalid image path")
 	}
 	return os.ReadFile(filepath.Join(s.Dir, file))
 }

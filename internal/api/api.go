@@ -6,20 +6,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"netrave/internal/access"
 	"netrave/internal/auth"
 	"netrave/internal/config"
 	"netrave/internal/database"
+	"netrave/internal/hostarch"
 	"netrave/internal/hoststat"
 	"netrave/internal/iconlib"
 	"netrave/internal/icons"
 	"netrave/internal/ksm"
+	"netrave/internal/names"
 	"netrave/internal/notify"
 	"netrave/internal/permcatalog"
 	"netrave/internal/qemu"
@@ -39,16 +39,6 @@ type Handler struct {
 	DropUser func(uid int64) error
 }
 
-var usernameRe = regexp.MustCompile(`^[A-Za-z0-9_.-]{3,32}$`)
-
-// validPassword checks password length in characters, not bytes:
-// Cyrillic takes two bytes in UTF-8, so len() would reject
-// valid passwords longer than 64 characters.
-func validPassword(p string) bool {
-	n := utf8.RuneCountInString(p)
-	return n >= 8 && n <= 128
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -59,10 +49,15 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// writeErrKey writes an English key with {name} parameters; the interface translates it.
+func writeErrKey(w http.ResponseWriter, code int, key string, params map[string]string) {
+	writeJSON(w, code, map[string]any{"error": key, "params": params})
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		writeErr(w, http.StatusBadRequest, "некорректный JSON")
+		writeErr(w, http.StatusBadRequest, "Invalid JSON")
 		return false
 	}
 	return true
@@ -74,6 +69,16 @@ func (h *Handler) audit(r *http.Request, action, detail string) {
 		return
 	}
 	h.DB.Audit(0, "", action, detail, auth.ClientIP(r))
+}
+
+// auditKey writes a journal record whose text is a key with parameters (see database.AuditKey).
+func (h *Handler) auditKey(r *http.Request, action, key string, params map[string]string) {
+	var uid int64
+	var username string
+	if ss := auth.FromContext(r.Context()); ss != nil {
+		uid, username = ss.User.ID, ss.User.Username
+	}
+	h.DB.AuditKey(uid, username, action, key, params, nil, auth.ClientIP(r))
 }
 
 // Register wires routes into mux.
@@ -89,7 +94,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 					return
 				}
 			}
-			writeErr(w, http.StatusForbidden, "нет права: "+strings.Join(perms, " / "))
+			writeErrKey(w, http.StatusForbidden, "No permission: {permissions}", map[string]string{"permissions": strings.Join(perms, " / ")})
 		}))
 	}
 
@@ -113,6 +118,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Page merging affects the whole host, so only an administrator can enable it.
 	mux.Handle("GET /api/ksm", admin(h.ksmStatus))
 	mux.Handle("PUT /api/ksm", admin(h.ksmSet))
+	// Messages from administrators are delivered as notifications to the chosen users.
+	mux.Handle("POST /api/messages", admin(h.sendMessage))
 	mux.Handle("GET /api/logs", h.Auth.RequirePerm("logs", http.HandlerFunc(h.logs)))
 	mux.Handle("DELETE /api/logs", h.Auth.RequirePerm("logs", http.HandlerFunc(h.clearLogs)))
 }
@@ -122,11 +129,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	ip := auth.ClientIP(r)
 	if !auth.SameOrigin(r) {
-		writeErr(w, http.StatusForbidden, "недопустимый Origin")
+		writeErr(w, http.StatusForbidden, "Invalid Origin")
 		return
 	}
 	if !h.Auth.Allow(ip) {
-		writeErr(w, http.StatusTooManyRequests, "слишком много попыток, попробуйте позже")
+		writeErr(w, http.StatusTooManyRequests, "Too many attempts, try again later")
 		return
 	}
 	var in struct {
@@ -146,21 +153,21 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		h.Auth.Fail(ip)
 		h.DB.Audit(0, in.Username, "login_failed", "", ip)
-		h.Notify.SendAdmins(notify.Warning, notify.CatSecurity, "Неудачная попытка входа",
-			"имя «"+in.Username+"», адрес "+ip, "/journal")
-		writeErr(w, http.StatusUnauthorized, "неверное имя пользователя или пароль")
+		h.Notify.SendAdmins(notify.Warning, notify.CatSecurity, "Failed sign-in attempt",
+			"user «{name}», address {ip}", "/journal", notify.P("name", in.Username, "ip", ip))
+		writeErr(w, http.StatusUnauthorized, "Wrong username or password")
 		return
 	}
 	h.Auth.Reset(ip)
 	token, csrf, exp, err := h.Auth.CreateSession(u.ID, ip)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "не удалось создать сессию")
+		writeErr(w, http.StatusInternalServerError, "Could not create a session")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: auth.CookieName, Value: token, Path: "/", Expires: exp,
 		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode})
 	h.DB.Audit(u.ID, u.Username, "login", "", ip)
-	h.Notify.Activity(u.ID, 0, notify.Info, notify.CatSecurity, "Вход в систему", "адрес "+ip, "")
+	h.Notify.Activity(u.ID, 0, notify.Info, notify.CatSecurity, "Signed in", "address {ip}", "", notify.P("ip", ip))
 	writeJSON(w, http.StatusOK, map[string]any{"user": u, "csrf": csrf})
 }
 
@@ -174,7 +181,7 @@ func (h *Handler) logout(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"user": ss.User, "csrf": ss.CSRF})
+	writeJSON(w, http.StatusOK, map[string]any{"user": ss.User, "csrf": ss.CSRF, "host_arch": hostarch.QEMUArch()})
 }
 
 // canChangeOwnPassword: an administrator can always; users without roles
@@ -193,7 +200,7 @@ func canChangeOwnPassword(u auth.User) bool {
 func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	if !canChangeOwnPassword(ss.User) {
-		writeErr(w, http.StatusForbidden, "нет права: "+permcatalog.Title(permcatalog.UsersPassword))
+		writeErrKey(w, http.StatusForbidden, "No permission: {permission_key}", map[string]string{"permission_key": permcatalog.Title(permcatalog.UsersPassword)})
 		return
 	}
 	var in struct {
@@ -204,32 +211,32 @@ func (h *Handler) changePassword(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !validPassword(in.New) {
-		writeErr(w, http.StatusBadRequest, "новый пароль должен содержать от 8 до 128 символов")
+	if err := names.CheckPassword(in.New); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if in.Confirm != in.New {
-		writeErr(w, http.StatusBadRequest, "пароли не совпадают")
+		writeErr(w, http.StatusBadRequest, "Passwords do not match")
 		return
 	}
 	_, hash, err := h.Auth.FindByUsername(ss.User.Username)
 	if err != nil || !auth.VerifyPassword(in.Current, hash) {
-		writeErr(w, http.StatusForbidden, "текущий пароль указан неверно")
+		writeErr(w, http.StatusForbidden, "The current password is incorrect")
 		return
 	}
 	nh, err := auth.HashPassword(in.New)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка хеширования")
+		writeErr(w, http.StatusInternalServerError, "Password hashing error")
 		return
 	}
 	if _, err := h.DB.Exec(`UPDATE users SET password_hash=? WHERE id=?`, nh, ss.User.ID); err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	h.Auth.DeleteUserSessions(ss.User.ID, ss.ID)
 	h.audit(r, "password_change", "")
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSecurity, "Пароль изменён", "«"+ss.User.Username+"»", "/account")
+		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSecurity, "Password changed", "«{name}»", "/account", notify.P("name", ss.User.Username))
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -262,7 +269,7 @@ func (h *Handler) system(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.DB.Query(`SELECT id,username,role,disabled,created_at FROM users ORDER BY id`)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -295,70 +302,70 @@ func (h *Handler) createUser(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	if !usernameRe.MatchString(in.Username) {
-		writeErr(w, http.StatusBadRequest, "имя: 3–32 символа (буквы, цифры, _ . -)")
+	if err := names.CheckUsername(in.Username); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if !validPassword(in.Password) {
-		writeErr(w, http.StatusBadRequest, "пароль должен содержать от 8 до 128 символов")
+	if err := names.CheckPassword(in.Password); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if in.Confirm != in.Password {
-		writeErr(w, http.StatusBadRequest, "пароли не совпадают")
+		writeErr(w, http.StatusBadRequest, "Passwords do not match")
 		return
 	}
 	if in.Role == "" {
 		in.Role = "user"
 	}
 	if in.Role != "user" && in.Role != "admin" {
-		writeErr(w, http.StatusBadRequest, "недопустимая роль")
+		writeErr(w, http.StatusBadRequest, "Invalid role")
 		return
 	}
 	if ss.User.Role != "admin" {
 		if in.Role != "user" || in.RoleID != 0 {
-			writeErr(w, http.StatusForbidden, "только администратор может назначать роли")
+			writeErr(w, http.StatusForbidden, "Only an administrator can assign roles")
 			return
 		}
 		if !ss.User.Can("users.manage") {
-			writeErr(w, http.StatusForbidden, "нет права: управление пользователями")
+			writeErr(w, http.StatusForbidden, "No permission: managing users")
 			return
 		}
 	}
 	if in.RoleID != 0 {
 		var n int
 		if err := h.DB.QueryRow(`SELECT COUNT(*) FROM roles WHERE id=?`, in.RoleID).Scan(&n); err != nil {
-			writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+			writeErr(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		if n == 0 {
-			writeErr(w, http.StatusBadRequest, "роль не найдена")
+			writeErr(w, http.StatusBadRequest, "Role not found")
 			return
 		}
 	}
 	hash, err := auth.HashPassword(in.Password)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка хеширования")
+		writeErr(w, http.StatusInternalServerError, "Password hashing error")
 		return
 	}
 	res, err := h.DB.Exec(`INSERT INTO users(username,password_hash,role) VALUES(?,?,?)`, in.Username, hash, in.Role)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			writeErr(w, http.StatusConflict, "пользователь с таким именем уже существует")
+			writeErr(w, http.StatusConflict, "A user with this name already exists")
 			return
 		}
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	id, _ := res.LastInsertId()
 	if in.RoleID != 0 {
 		if _, err := h.DB.Exec(`INSERT OR IGNORE INTO user_roles(user_id,role_id) VALUES(?,?)`, id, in.RoleID); err != nil {
-			writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+			writeErr(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 	}
 	h.audit(r, "user_create", in.Username+" ("+in.Role+")")
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, 0, notify.Success, notify.CatAccount, "Пользователь создан", in.Username+" ("+in.Role+")", "/users")
+		h.Notify.Activity(ss.User.ID, 0, notify.Success, notify.CatAccount, "User created", "{name} ({role})", "/users", notify.P("name", in.Username, "role", in.Role))
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
 }
@@ -374,7 +381,7 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "некорректный id")
+		writeErr(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	var in struct {
@@ -390,26 +397,26 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 	var curDis int
 	err = h.DB.QueryRow(`SELECT role,disabled,username FROM users WHERE id=?`, id).Scan(&curRole, &curDis, &name)
 	if err == sql.ErrNoRows {
-		writeErr(w, http.StatusNotFound, "пользователь не найден")
+		writeErr(w, http.StatusNotFound, "User not found")
 		return
 	} else if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	newRole, newDis := curRole, curDis != 0
 	if ss.User.Role != "admin" {
 		if curRole == "admin" {
-			writeErr(w, http.StatusForbidden, "нельзя изменять администратора")
+			writeErr(w, http.StatusForbidden, "You cannot change an administrator")
 			return
 		}
 		if in.Role != nil {
-			writeErr(w, http.StatusForbidden, "только администратор может менять роль пользователя")
+			writeErr(w, http.StatusForbidden, "Only an administrator can change the role of a user")
 			return
 		}
 	}
 	if in.Role != nil {
 		if *in.Role != "user" && *in.Role != "admin" {
-			writeErr(w, http.StatusBadRequest, "недопустимая роль")
+			writeErr(w, http.StatusBadRequest, "Invalid role")
 			return
 		}
 		newRole = *in.Role
@@ -419,36 +426,36 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if id == ss.User.ID {
 		if ss.User.Role == "admin" && (newRole != "admin" || newDis) {
-			writeErr(w, http.StatusBadRequest, "нельзя понизить или отключить самого себя")
+			writeErr(w, http.StatusBadRequest, "You cannot demote or disable yourself")
 			return
 		}
 		if ss.User.Role != "admin" && newDis {
-			writeErr(w, http.StatusBadRequest, "нельзя отключить самого себя")
+			writeErr(w, http.StatusBadRequest, "You cannot disable yourself")
 			return
 		}
 	}
 	if curRole == "admin" && (newRole != "admin" || newDis) && h.otherAdmins(id) == 0 {
-		writeErr(w, http.StatusBadRequest, "в системе должен остаться хотя бы один активный администратор")
+		writeErr(w, http.StatusBadRequest, "At least one active administrator must remain in the system")
 		return
 	}
 	var hash string
 	if in.Password != nil {
-		if !validPassword(*in.Password) {
-			writeErr(w, http.StatusBadRequest, "пароль должен содержать от 8 до 128 символов")
+		if err := names.CheckPassword(*in.Password); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		if in.Confirm == nil || *in.Confirm != *in.Password {
-			writeErr(w, http.StatusBadRequest, "пароли не совпадают")
+			writeErr(w, http.StatusBadRequest, "Passwords do not match")
 			return
 		}
 		if hash, err = auth.HashPassword(*in.Password); err != nil {
-			writeErr(w, http.StatusInternalServerError, "ошибка хеширования")
+			writeErr(w, http.StatusInternalServerError, "Password hashing error")
 			return
 		}
 	}
 	tx, err := h.DB.Begin()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer tx.Rollback()
@@ -457,17 +464,17 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 		dis = 1
 	}
 	if _, err = tx.Exec(`UPDATE users SET role=?, disabled=? WHERE id=?`, newRole, dis, id); err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	if hash != "" {
 		if _, err = tx.Exec(`UPDATE users SET password_hash=? WHERE id=?`, hash, id); err != nil {
-			writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+			writeErr(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 	}
 	if err = tx.Commit(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	if newDis || hash != "" {
@@ -477,8 +484,8 @@ func (h *Handler) updateUser(w http.ResponseWriter, r *http.Request) {
 	h.audit(r, "user_update", name)
 	h.notifyUserChanged(ss, id, curRole, newRole, curDis != 0, newDis, hash != "" && id == ss.User.ID)
 	if hash != "" && id != ss.User.ID {
-		h.Notify.Send(id, notify.Warning, notify.CatSecurity, "Администратор изменил ваш пароль",
-			"Дата и время: "+time.Now().Format("02.01.2006 15:04")+". Вам нужно войти заново.", "/account")
+		h.Notify.Send(id, notify.Warning, notify.CatSecurity, "Administrator changed your password",
+			"Date and time: {time}. You need to sign in again.", "/account", notify.P("time", time.Now().Format("02.01.2006 15:04")))
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -487,53 +494,48 @@ func (h *Handler) deleteUser(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "некорректный id")
+		writeErr(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	if id == ss.User.ID {
-		writeErr(w, http.StatusBadRequest, "нельзя удалить самого себя")
+		writeErr(w, http.StatusBadRequest, "You cannot delete yourself")
 		return
 	}
 	var role, name string
 	err = h.DB.QueryRow(`SELECT role,username FROM users WHERE id=?`, id).Scan(&role, &name)
 	if err == sql.ErrNoRows {
-		writeErr(w, http.StatusNotFound, "пользователь не найден")
+		writeErr(w, http.StatusNotFound, "User not found")
 		return
 	} else if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	if role == "admin" && ss.User.Role != "admin" {
-		writeErr(w, http.StatusForbidden, "нельзя удалить администратора")
+		writeErr(w, http.StatusForbidden, "You cannot delete an administrator")
 		return
 	}
 	if role == "admin" && h.otherAdmins(id) == 0 {
-		writeErr(w, http.StatusBadRequest, "нельзя удалить последнего администратора")
+		writeErr(w, http.StatusBadRequest, "You cannot delete the last administrator")
 		return
 	}
 	if h.DropUser != nil {
 		if err := h.DropUser(id); err != nil {
-			writeErr(w, http.StatusInternalServerError, "не удалось удалить лаборатории пользователя")
+			writeErr(w, http.StatusInternalServerError, "Could not delete the laboratories of the user")
 			return
 		}
 	}
 	if _, err := h.DB.Exec(`DELETE FROM users WHERE id=?`, id); err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка базы данных")
+		writeErr(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	access.InvalidateUserPermissions(h.DB, id)
-	if err := h.DB.SweepSnapshots(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "не удалось удалить снимки пользователя")
-		return
-	}
-	_ = h.DB.Folders.RemoveUser(id) // folder assignments are stored in the folder file
 	if h.Cfg != nil {
 		_ = RemoveTheme(h.Cfg.ThemesDir, id) // theme is a file; an error does not cancel user deletion
 		_ = iconlib.RemoveOwner(icons.New(h.Cfg.IconsDir), id)
 	}
 	h.audit(r, "user_delete", name)
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, 0, notify.Warning, notify.CatAccount, "Пользователь удалён", name, "/users")
+		h.Notify.Activity(ss.User.ID, 0, notify.Warning, notify.CatAccount, "User deleted", name, "/users")
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -556,11 +558,11 @@ func (h *Handler) putSettings(w http.ResponseWriter, r *http.Request) {
 	for k, v := range in {
 		known, ok := config.SettingValid(k, v)
 		if !known {
-			writeErr(w, http.StatusBadRequest, "неизвестная настройка: "+k)
+			writeErrKey(w, http.StatusBadRequest, "Unknown setting: {name}", map[string]string{"name": k})
 			return
 		}
 		if !ok {
-			writeErr(w, http.StatusBadRequest, "недопустимое значение для "+k)
+			writeErrKey(w, http.StatusBadRequest, "Invalid value for {name}", map[string]string{"name": k})
 			return
 		}
 	}
@@ -570,7 +572,7 @@ func (h *Handler) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	h.audit(r, "settings_update", "")
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSettings, "Системные настройки изменены", "«"+ss.User.Username+"»", "/settings")
+		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSettings, "System settings changed", "«{name}»", "/settings", notify.P("name", ss.User.Username))
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -600,11 +602,11 @@ func (h *Handler) ksmSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Mechanism != ksm.KindKSM && in.Mechanism != ksm.KindUKSM {
-		writeErr(w, http.StatusBadRequest, "укажите mechanism: ksm или uksm")
+		writeErr(w, http.StatusBadRequest, "Specify mechanism: ksm or uksm")
 		return
 	}
 	if in.Enabled == nil {
-		writeErr(w, http.StatusBadRequest, "укажите enabled: true или false")
+		writeErr(w, http.StatusBadRequest, "Specify enabled: true or false")
 		return
 	}
 	if err := h.ksmService().Set(in.Mechanism, *in.Enabled); err != nil {
@@ -612,10 +614,10 @@ func (h *Handler) ksmSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	title := map[string]string{ksm.KindKSM: "KSM", ksm.KindUKSM: "UKSM"}[in.Mechanism]
-	state := map[bool]string{true: "включён", false: "выключен"}[*in.Enabled]
-	h.audit(r, "ksm_"+in.Mechanism, state)
+	state := map[bool]string{true: "Enabled", false: "Disabled"}[*in.Enabled]
+	h.auditKey(r, "ksm_"+in.Mechanism, "{state_key}", map[string]string{"state_key": state})
 	if ss := auth.FromContext(r.Context()); ss != nil {
-		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSettings, "Слияние страниц памяти: "+title, state, "/settings")
+		h.Notify.Activity(ss.User.ID, 0, notify.Info, notify.CatSettings, "Memory page merging: {mechanism}", map[bool]string{true: "Enabled", false: "Disabled"}[*in.Enabled], "/settings", notify.P("mechanism", title))
 	}
 	writeJSON(w, http.StatusOK, h.ksmService().Status())
 }
@@ -629,7 +631,7 @@ func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := h.DB.Journal.Tail(limit, nil)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка чтения журнала")
+		writeErr(w, http.StatusInternalServerError, "Journal read error")
 		return
 	}
 	writeJSON(w, http.StatusOK, list)
@@ -638,7 +640,7 @@ func (h *Handler) logs(w http.ResponseWriter, r *http.Request) {
 // clearLogs clears the journal. Permission is checked in the route, as for reading.
 func (h *Handler) clearLogs(w http.ResponseWriter, r *http.Request) {
 	if err := h.DB.Journal.Clear(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "ошибка записи журнала")
+		writeErr(w, http.StatusInternalServerError, "Journal write error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -654,23 +656,23 @@ func (h *Handler) notifyUserChanged(ss *auth.Session, id int64, oldRole, newRole
 	level := notify.Info
 	if oldRole != newRole {
 		if newRole == "admin" {
-			parts = append(parts, "роль: администратор")
+			parts = append(parts, "role: administrator")
 		} else {
-			parts = append(parts, "роль: пользователь")
+			parts = append(parts, "role: user")
 		}
 		level = notify.Warning
 	}
 	if oldDis != newDis {
 		if newDis {
-			parts = append(parts, "учётная запись отключена (активные сессии завершены)")
+			parts = append(parts, "account disabled (active sessions ended)")
 			level = notify.Error
 		} else {
-			parts = append(parts, "учётная запись снова активна")
+			parts = append(parts, "account active again")
 			level = notify.Success
 		}
 	}
 	if pass {
-		parts = append(parts, "пароль (вам нужно войти заново)")
+		parts = append(parts, "password (you need to sign in again)")
 		level = notify.Warning
 	}
 	if len(parts) == 0 {
@@ -678,12 +680,13 @@ func (h *Handler) notifyUserChanged(ss *auth.Session, id int64, oldRole, newRole
 	}
 	// The recipient is strictly the account being changed. The initiator is mentioned in the text: otherwise
 	// an administrator changing another user's permissions would receive a notification about themselves.
-	title := "Ваш аккаунт изменён"
-	by := "Инициатор: «" + ss.User.Username + "»."
+	title := "Your account changed"
+	by := "Initiator: «{user}»."
 	if id == ss.User.ID {
-		title = "Вы изменили свой аккаунт"
-		by = "Изменения внесены в ваш собственный аккаунт."
+		title = "You changed your account"
+		by = "The changes were made to your own account."
 	}
 	h.Notify.Send(id, level, notify.CatAccount, title,
-		"Изменено: "+strings.Join(parts, "; ")+". "+by, "/account")
+		"Changes: {changes_list}. {by_key}", "/account",
+		notify.P("changes_list", strings.Join(parts, "; "), "by_key", by, "user", ss.User.Username))
 }

@@ -11,10 +11,10 @@ import (
 	"io"
 	"log"
 	"math/rand"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,12 +22,14 @@ import (
 
 	"netrave/internal/config"
 	"netrave/internal/database"
+	"netrave/internal/hostarch"
 	"netrave/internal/instances"
+	"netrave/internal/msgs"
 )
 
 var (
-	ErrBusy     = errors.New("с устройством уже выполняется другая операция")
-	ErrNotFound = errors.New("устройство не найдено")
+	ErrBusy     = errors.New("Another operation is already running on this device")
+	ErrNotFound = errors.New("Device not found")
 )
 
 type vm struct {
@@ -63,7 +65,7 @@ type Runtime struct {
 // Notifier sends notifications about machine events. The interface breaks the import cycle
 // qemu → notify → console → qemu.
 type Notifier interface {
-	SendInstance(instanceID int64, level, category, title, body, link string)
+	SendInstance(instanceID int64, level, category, title, body, link string, params ...map[string]string)
 }
 
 // Manager manages the lifecycle of QEMU processes.
@@ -171,7 +173,7 @@ func (m *Manager) get(id int64) *vm {
 }
 
 func (m *Manager) paths(s *Spec) Paths {
-	return DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, s.LabID, s.ID)
+	return DevicePaths(m.cfg.InstancesDir, m.cfg.LogsDir, m.cfg.RunDir, s)
 }
 
 func (m *Manager) setState(id int64, state, lastErr string) {
@@ -230,12 +232,12 @@ func (m *Manager) HotplugNIC(rid int64, nic int, tap string) error {
 		return nil // machine is not running: the interface will appear at the next start
 	}
 	if nic < 0 || nic >= 32 {
-		return fmt.Errorf("интерфейс e%d вне допустимого диапазона", nic)
+		return msgs.New("Interface e{nic} is out of range", map[string]string{"nic": fmt.Sprint(nic)})
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if _, err := qmpStatus(v.qmp); err != nil {
-		return fmt.Errorf("QMP недоступен: %w", err)
+		return msgs.Wrap(err, "QMP is unavailable: {detail}", map[string]string{"detail": err.Error()})
 	}
 	devID, netID := fmt.Sprintf("nic%d", nic), fmt.Sprintf("net%d", nic)
 	if qmpDeviceExists(v.qmp, devID) {
@@ -262,7 +264,7 @@ func (m *Manager) HotplugNIC(rid int64, nic int, tap string) error {
 	if slot := nicSlot(v.spec, nic); slot != "" {
 		if !qmpDeviceExists(v.qmp, slot) {
 			_, _ = qmpDo(v.qmp, "netdev_del", map[string]string{"id": netID}, 5*time.Second)
-			return fmt.Errorf("нет свободного слота PCIe (%s): перезапустите машину, чтобы добавить слоты", slot)
+			return msgs.New("No free PCIe slot ({slot}): restart the machine to add slots", map[string]string{"slot": slot})
 		}
 		dev["bus"] = slot
 	}
@@ -288,12 +290,12 @@ func (m *Manager) UnplugNIC(rid int64, nic int) error {
 		return nil
 	}
 	if nic < 0 || nic >= 32 {
-		return fmt.Errorf("интерфейс e%d вне допустимого диапазона", nic)
+		return msgs.New("Interface e{nic} is out of range", map[string]string{"nic": fmt.Sprint(nic)})
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if _, err := qmpStatus(v.qmp); err != nil {
-		return fmt.Errorf("QMP недоступен: %w", err)
+		return msgs.Wrap(err, "QMP is unavailable: {detail}", map[string]string{"detail": err.Error()})
 	}
 	devID, netID := fmt.Sprintf("nic%d", nic), fmt.Sprintf("net%d", nic)
 	if !qmpDeviceExists(v.qmp, devID) {
@@ -316,7 +318,7 @@ func (m *Manager) UnplugNIC(rid int64, nic int) error {
 			if _, err := qmpDo(v.qmp, "netdev_del", map[string]string{"id": netID}, 5*time.Second); err == nil {
 				return nil
 			}
-			return errors.New("QEMU не подтвердил отключение интерфейса (device_del)")
+			return errors.New("QEMU did not confirm the interface removal (device_del)")
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -329,26 +331,28 @@ func (m *Manager) UnplugNIC(rid int64, nic int) error {
 func (m *Manager) loadSpec(id int64) (*Spec, string, error) {
 	var s Spec
 	var dirname, layoutJSON string
-	var imageID int64
+	var imageID string
 	// Configuration comes from the instance row (user settings), name and topology come from devices.
 	// Name, lab and architecture come from the topology (file); settings come from the instance row,
 	// and the process's mutable state comes only from the manager's memory.
 	err := m.db.QueryRow(`SELECT r.id,r.device_id,r.machine,r.cpu,r.ram_mb,r.nics,r.nic_model,r.disk_bus,r.bios,r.console,r.extra_args,
-		COALESCE(r.image_id,0),r.instance_id
-		FROM instance_devices r
+		COALESCE(r.image_id,''),r.instance_id,i.lab_id,u.username
+		FROM instance_devices r JOIN lab_instances i ON i.id=r.instance_id JOIN users u ON u.id=i.user_id
 		WHERE r.id=?`, id).
-		Scan(&s.ID, &s.DeviceID, &s.Machine, &s.CPU, &s.RAMMB, &s.NICs, &s.NICModel, &s.DiskBus, &s.BIOS, &s.Console, &s.ExtraArgs, &imageID, &s.InstanceID)
+		Scan(&s.ID, &s.DeviceID, &s.Machine, &s.CPU, &s.RAMMB, &s.NICs, &s.NICModel, &s.DiskBus, &s.BIOS, &s.Console, &s.ExtraArgs, &imageID, &s.InstanceID, &s.LabID, &s.Owner)
 	if err == nil {
 		// Image comes from the catalog; if there is no image, the folder and layout are empty.
 		layoutJSON = "{}"
-		if im, ok := m.db.Catalog.Image(imageID); ok {
-			dirname, layoutJSON = im.Dirname, im.LayoutJSON
+		if imageID != "" {
+			if im, ok := m.db.Catalog.ImageByDirname(imageID); ok {
+				dirname, layoutJSON = im.Dirname, im.LayoutJSON
+			}
 		}
-		fd, labID, ok := m.db.Labs.Device(s.DeviceID)
+		fd, _, ok := m.db.Labs.Device(s.LabID, s.DeviceID)
 		if !ok {
 			return nil, "", ErrNotFound
 		}
-		s.LabID, s.Name, s.Arch = labID, fd.Name, fd.Arch
+		s.Name, s.Arch = fd.Name, fd.Arch
 	}
 	if err == sql.ErrNoRows {
 		return nil, "", ErrNotFound
@@ -365,7 +369,7 @@ func (m *Manager) loadSpec(id int64) (*Spec, string, error) {
 			CDROMs []string `json:"cdroms"`
 		}
 		_ = json.Unmarshal([]byte(layoutJSON), &lay)
-		dir := filepath.Join(m.cfg.ImagesDir, dirname)
+		dir := filepath.Join(m.cfg.DisksDir, dirname)
 		p := m.paths(&s)
 		for i, d := range lay.Disks {
 			s.Disks = append(s.Disks, DiskSpec{
@@ -382,21 +386,21 @@ func (m *Manager) loadSpec(id int64) (*Spec, string, error) {
 }
 
 func (m *Manager) binary(arch string) (string, error) {
-	switch arch {
-	case "x86_64":
+	if arch == hostarch.QEMUArch() {
 		p, err := exec.LookPath(m.cfg.QEMUPath)
 		if err != nil {
-			return "", fmt.Errorf("QEMU не найден: %s", m.cfg.QEMUPath)
-		}
-		return p, nil
-	case "i386":
-		p, err := exec.LookPath("qemu-system-i386")
-		if err != nil {
-			return "", errors.New("qemu-system-i386 не найден")
+			return "", msgs.New("QEMU not found: {path}", map[string]string{"path": m.cfg.QEMUPath})
 		}
 		return p, nil
 	}
-	return "", fmt.Errorf("архитектура %s пока не поддерживается запуском", arch)
+	if arch == "i386" && hostarch.QEMUArch() == "x86_64" {
+		p, err := exec.LookPath("qemu-system-i386")
+		if err != nil {
+			return "", errors.New("qemu-system-i386 not found")
+		}
+		return p, nil
+	}
+	return "", msgs.New("Architecture {arch} does not run on this host ({host})", map[string]string{"arch": arch, "host": hostarch.QEMUArch()})
 }
 
 func (m *Manager) qemuImg(args ...string) (string, error) {
@@ -446,12 +450,17 @@ func (m *Manager) LogTail(devID int64, n int64) (string, error) {
 // ---------- checks and resources ----------
 
 func (m *Manager) preflight(s *Spec) error {
-	if s.Arch != "x86_64" && s.Arch != "i386" {
-		return fmt.Errorf("архитектура %s пока не поддерживается запуском (только x86_64 и i386 с KVM)", s.Arch)
+	// Before any check: the firmware choice and the BIOS check below depend on the normalized device.
+	normalizeForArch(s)
+	if s.Arch != hostarch.QEMUArch() && !(s.Arch == "i386" && hostarch.QEMUArch() == "x86_64") {
+		return msgs.New("Architecture {arch} does not run on this host ({host}): KVM runs only guests of its own architecture", map[string]string{"arch": s.Arch, "host": hostarch.QEMUArch()})
+	}
+	if s.Arch == "aarch64" && s.BIOS != "uefi" {
+		return errors.New("aarch64 machines boot only through UEFI")
 	}
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
-		return fmt.Errorf("KVM недоступен: %v", err)
+		return msgs.Wrap(err, "KVM is unavailable: {detail}", map[string]string{"detail": err.Error()})
 	}
 	f.Close()
 	if _, err := m.binary(s.Arch); err != nil {
@@ -461,16 +470,16 @@ func (m *Manager) preflight(s *Spec) error {
 		return err
 	}
 	if len(s.Disks)+len(s.CDROMs) == 0 {
-		return errors.New("у устройства не выбрана папка образа или она пуста (нужны диски hda.qcow2 и/или ISO)")
+		return errors.New("The device has no image folder selected or it is empty (hda.qcow2 and/or ISO disks are needed)")
 	}
 	for _, d := range s.Disks {
 		if !fileExists(d.Base) {
-			return fmt.Errorf("файл диска не найден: %s", filepath.Base(d.Base))
+			return msgs.New("Disk file not found: {file}", map[string]string{"file": filepath.Base(d.Base)})
 		}
 	}
 	for _, c := range s.CDROMs {
 		if !fileExists(c) {
-			return fmt.Errorf("ISO не найден: %s", filepath.Base(c))
+			return msgs.New("ISO not found: {file}", map[string]string{"file": filepath.Base(c)})
 		}
 	}
 	if _, err := ParseExtraArgs(s.ExtraArgs); err != nil {
@@ -478,7 +487,7 @@ func (m *Manager) preflight(s *Spec) error {
 	}
 	need := uint64(s.RAMMB)<<20 + 256<<20
 	if avail := MemAvailable(); avail > 0 && avail < need {
-		return fmt.Errorf("недостаточно свободной памяти: нужно %d МБ, доступно %d МБ", need>>20, avail>>20)
+		return msgs.New("Not enough free memory: {need} MB needed, {available} MB available", map[string]string{"need": fmt.Sprint(need >> 20), "available": fmt.Sprint(avail >> 20)})
 	}
 	missing := false
 	for _, d := range s.Disks {
@@ -487,8 +496,8 @@ func (m *Manager) preflight(s *Spec) error {
 		}
 	}
 	if missing {
-		if free := DiskFree(m.cfg.LabsDir); free < 2<<30 {
-			return fmt.Errorf("недостаточно места на диске: свободно %d МБ, нужно не менее 2048 МБ", free>>20)
+		if free := DiskFree(m.cfg.InstancesDir); free < 2<<30 {
+			return msgs.New("Not enough disk space: {free} MB free, at least 2048 MB needed", map[string]string{"free": fmt.Sprint(free >> 20)})
 		}
 	}
 	return nil
@@ -529,7 +538,7 @@ func (m *Manager) allocPorts(id int64) (vncDisplay, serial int, err error) {
 		}
 	}
 	if vncDisplay == 0 || serial == 0 {
-		return 0, 0, errors.New("не удалось подобрать свободные порты консоли")
+		return 0, 0, errors.New("Could not find free console ports")
 	}
 	m.mu.Lock()
 	v := m.runtimeVM(id)
@@ -561,7 +570,7 @@ func (m *Manager) applyPendingRebases(s *Spec) error {
 			continue
 		}
 		if err != nil {
-			return fmt.Errorf("чтение отложенного переключения диска: %w", err)
+			return msgs.Wrap(err, "Reading the deferred disk switch: {detail}", map[string]string{"detail": err.Error()})
 		}
 		if !fileExists(d.Overlay) {
 			_ = os.Remove(marker) // no disk - a new one will be created from the current image
@@ -573,70 +582,18 @@ func (m *Manager) applyPendingRebases(s *Spec) error {
 			continue
 		}
 		if !fileExists(oldBase) {
-			return fmt.Errorf("прошлый образ диска не найден: %s", filepath.Base(oldBase))
+			return msgs.New("Previous disk image not found: {file}", map[string]string{"file": filepath.Base(oldBase)})
 		}
 		format := d.BaseFmt
 		if format == "" {
 			format = "qcow2"
 		}
 		if err := m.rebaseLayer(d.Overlay, oldBase, format); err != nil {
-			return fmt.Errorf("возврат диска к прошлому образу: %w", err)
+			return msgs.Wrap(err, "Reverting the disk to the previous image: {detail}", map[string]string{"detail": err.Error()})
 		}
 		if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("удаление отметки переключения диска: %w", err)
+			return msgs.Wrap(err, "Removing the disk switch mark: {detail}", map[string]string{"detail": err.Error()})
 		}
-	}
-	return m.applyPendingLayerRebases(s.ID)
-}
-
-// applyPendingLayerRebases applies pending switches to the snapshot layers
-// in the machine's chain. A layer could remain on the old image if a running machine
-// was using it during the overwrite; it is safe to fix this before startup.
-func (m *Manager) applyPendingLayerRebases(id int64) error {
-	var layerID int64
-	if err := m.db.QueryRow(`SELECT COALESCE(layer_image_id,0) FROM instance_devices WHERE id=?`, id).Scan(&layerID); err != nil {
-		if err == sql.ErrNoRows {
-			return nil
-		}
-		return err
-	}
-	seen := map[int64]bool{}
-	for layerID != 0 && !seen[layerID] {
-		seen[layerID] = true
-		im, ok := m.db.Catalog.Image(layerID)
-		if !ok {
-			return nil
-		}
-		for _, disk := range imageDisks(im.LayoutJSON) {
-			layer := filepath.Join(m.cfg.ImagesDir, im.Dirname, disk.Name)
-			marker := rebaseMarker(layer)
-			data, err := os.ReadFile(marker)
-			if os.IsNotExist(err) {
-				continue
-			}
-			if err != nil {
-				return fmt.Errorf("чтение отложенного переключения слоя: %w", err)
-			}
-			oldBase := strings.TrimSpace(string(data))
-			if oldBase == "" {
-				_ = os.Remove(marker)
-				continue
-			}
-			if !fileExists(oldBase) {
-				return fmt.Errorf("прошлый образ слоя не найден: %s", filepath.Base(oldBase))
-			}
-			format := disk.Format
-			if format == "" {
-				format = "qcow2"
-			}
-			if err := m.rebaseLayer(layer, oldBase, format); err != nil {
-				return fmt.Errorf("возврат слоя к прошлому образу: %w", err)
-			}
-			if err := os.Remove(marker); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("удаление отметки переключения слоя: %w", err)
-			}
-		}
-		layerID = im.ParentID
 	}
 	return nil
 }
@@ -646,8 +603,8 @@ func (m *Manager) ensureDisks(s *Spec, p Paths) error {
 		if fileExists(d.Overlay) {
 			continue
 		}
-		if free := DiskFree(m.cfg.LabsDir); free < 1<<30 {
-			return errors.New("недостаточно места на диске для создания дисков устройства")
+		if free := DiskFree(m.cfg.InstancesDir); free < 1<<30 {
+			return errors.New("Not enough disk space to create the device disks")
 		}
 		if _, err := m.qemuImg("create", "-f", "qcow2", "-F", d.BaseFmt, "-b", d.Base, d.Overlay); err != nil {
 			return err
@@ -689,7 +646,7 @@ func (m *Manager) Start(id int64) error {
 	}
 	if state != "stopped" && state != "error" {
 		l.Unlock()
-		return fmt.Errorf("устройство уже запущено (состояние: %s)", state)
+		return msgs.New("The device is already running (state: {state})", map[string]string{"state": state})
 	}
 	if err := m.preflight(spec); err != nil {
 		l.Unlock()
@@ -711,7 +668,7 @@ func (m *Manager) Start(id int64) error {
 
 func (m *Manager) markFailed(s *Spec, err error) {
 	if m.Notify != nil {
-		m.Notify.SendInstance(s.InstanceID, "error", "machine", "Машина не запустилась",
+		m.Notify.SendInstance(s.InstanceID, "error", "machine", "Machine failed to start",
 			s.Name+": "+firstLine(err.Error()), labLink(s.LabID))
 	}
 	m.setState(s.ID, "error", err.Error())
@@ -739,7 +696,7 @@ func (m *Manager) launch(s *Spec, vncDisplay, serialPort int) error {
 		}
 		if ov.Vars != "" && !fileExists(p.Vars) {
 			if err := copyFile(ov.Vars, p.Vars); err != nil {
-				return fmt.Errorf("копирование OVMF_VARS: %w", err)
+				return msgs.Wrap(err, "Copying OVMF_VARS: {detail}", map[string]string{"detail": err.Error()})
 			}
 		}
 	}
@@ -747,12 +704,15 @@ func (m *Manager) launch(s *Spec, vncDisplay, serialPort int) error {
 	if err != nil {
 		return err
 	}
-	log.Printf("qemu: машина %d (%s): адаптер %s, интерфейсов %d", s.ID, s.Name, s.NICModel, s.NICs)
+	log.Printf("qemu: machine %d (%s): adapter %s, interfaces %d", s.ID, s.Name, s.NICModel, s.NICs)
 	for i := 0; i < s.NICs; i++ {
-		log.Printf("qemu: машина %d nic%d: model=%s mac=%s", s.ID, i, s.NICModel, MAC(s.ID, i))
+		log.Printf("qemu: machine %d nic%d: model=%s mac=%s", s.ID, i, s.NICModel, MAC(s.ID, i))
 	}
 	bin, err := m.binary(s.Arch)
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p.Log), 0o750); err != nil {
 		return err
 	}
 	logf, err := os.OpenFile(p.Log, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
@@ -765,7 +725,7 @@ func (m *Manager) launch(s *Spec, vncDisplay, serialPort int) error {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // The VM survives a server restart
 	if err := cmd.Start(); err != nil {
 		logf.Close()
-		return fmt.Errorf("не удалось запустить QEMU: %w", err)
+		return msgs.Wrap(err, "Could not start QEMU: {detail}", map[string]string{"detail": err.Error()})
 	}
 	logf.Close()
 
@@ -802,7 +762,7 @@ func (m *Manager) launch(s *Spec, vncDisplay, serialPort int) error {
 		time.Sleep(300 * time.Millisecond)
 	}
 	m.kill(v)
-	return errors.New("QEMU не ответил по QMP за 15 секунд")
+	return errors.New("QEMU did not respond over QMP within 15 seconds")
 }
 
 func (m *Manager) kill(v *vm) {
@@ -833,10 +793,10 @@ func (m *Manager) handleExit(v *vm, waitErr error) {
 	} else {
 		tail := strings.TrimSpace(logTail(p.Log, 1500))
 		if m.Notify != nil {
-			m.Notify.SendInstance(v.spec.InstanceID, "error", "machine", "Машина аварийно завершилась",
-				v.spec.Name+": QEMU завершился с ошибкой. Подробности — в журнале запуска машины.", labLink(v.spec.LabID))
+			m.Notify.SendInstance(v.spec.InstanceID, "error", "machine", "Machine crashed",
+				"{name}: QEMU exited with an error. Details are in the machine start log.", labLink(v.spec.LabID), map[string]string{"name": v.spec.Name})
 		}
-		m.setState(v.spec.ID, "error", fmt.Sprintf("QEMU завершился аварийно: %v\n%s", waitErr, tail))
+		m.setState(v.spec.ID, "error", "QEMU exited unexpectedly: "+waitErr.Error()+"\n"+tail)
 	}
 	m.clearRuntime(v.spec.ID)
 	// A restart waits for v.done to start a new process. The signal is closed only after cleaning up
@@ -922,7 +882,7 @@ func (m *Manager) Restart(id int64) error {
 	}
 	if state != "running" && state != "paused" {
 		l.Unlock()
-		return fmt.Errorf("перезапуск недоступен в состоянии %s", state)
+		return msgs.New("Restart is not available in state {state}", map[string]string{"state": state})
 	}
 	m.setState(id, "stopping", "")
 	v.mu.Lock()
@@ -966,7 +926,7 @@ func (m *Manager) pauseResume(id int64, cmd, from, to string) error {
 	}
 	v := m.get(id)
 	if v == nil || state != from {
-		return fmt.Errorf("операция недоступна в состоянии %s", state)
+		return msgs.New("The operation is not available in state {state}", map[string]string{"state": state})
 	}
 	if _, err := qmpDo(v.qmp, cmd, nil, 5*time.Second); err != nil {
 		return err
@@ -975,7 +935,7 @@ func (m *Manager) pauseResume(id int64, cmd, from, to string) error {
 	return nil
 }
 
-// Wipe deletes the device's disk (and snapshots): on the next start a clean disk is created from the image.
+// Wipe deletes the device's disk: on the next start a clean disk is created from the image.
 // Wipe returns the machine to the administrator's reference image. If it is running or paused,
 // it stops it itself while holding the device lock: deleting overlay disks with a live
 // QEMU is not allowed. Configuration, parameters, network, MAC addresses and the assigned image do not change.
@@ -991,7 +951,7 @@ func (m *Manager) Wipe(id int64) error {
 	}
 	// While a start or stop is in progress, the disk may be held by the QEMU process.
 	if state == "starting" || state == "stopping" {
-		return fmt.Errorf("%w: дождитесь завершения операции (состояние: %s)", ErrBusy, state)
+		return msgs.Wrap(ErrBusy, "The machine is busy: wait for the operation to finish (state: {state})", map[string]string{"state": state})
 	}
 	if v := m.get(id); v != nil {
 		m.setState(id, "stopping", "")
@@ -1004,7 +964,7 @@ func (m *Manager) Wipe(id int64) error {
 		case <-v.done:
 			// The process has exited; handleExit has already cleaned up pid/ports and state.
 		default:
-			return errors.New("не удалось остановить машину: процесс QEMU не завершился")
+			return errors.New("Could not stop the machine: the QEMU process did not exit")
 		}
 	}
 	p := m.paths(s)
@@ -1034,13 +994,7 @@ func (m *Manager) Wipe(id int64) error {
 	m.clearRuntime(id)
 	m.setState(id, "stopped", "")
 	if len(problems) > 0 {
-		return fmt.Errorf("не удалось удалить рабочие диски: %s", strings.Join(problems, "; "))
-	}
-	if err := m.db.Catalog.DeleteSnapshotsOf(id); err != nil {
-		return fmt.Errorf("не удалось удалить снимки: %w", err)
-	}
-	if _, err := m.db.Exec(`UPDATE instance_devices SET layer_image_id=NULL WHERE id=?`, id); err != nil {
-		return fmt.Errorf("не удалось вернуть базовый образ: %w", err)
+		return msgs.New("Could not delete the working disks: {detail}", map[string]string{"detail": strings.Join(problems, "; ")})
 	}
 	return nil
 }
@@ -1054,24 +1008,33 @@ func firstLine(s string) string {
 }
 
 // labLink is a link to the lab for a notification (interface route).
-func labLink(labID int64) string { return "/labs/" + strconv.FormatInt(labID, 10) + "/editor" }
+func labLink(labName string) string { return "/labs/" + url.PathEscape(labName) + "/editor" }
 
 // overlayFiles returns the device's working disks (disk0.qcow2, disk1.qcow2, ...) in the device directory.
 func overlayFiles(dir string) []string {
+	if dir == "" {
+		return nil
+	}
 	g, _ := filepath.Glob(filepath.Join(dir, "disk*.qcow2"))
 	return g
 }
 
 // CloneFiles copies the disk of a stopped device src to device dst.
-func (m *Manager) CloneFiles(labID, src, dst int64) error {
-	ps := DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, labID, src)
-	pd := DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, labID, dst)
+func (m *Manager) CloneFiles(src, dst int64) error {
+	ps, err := WorkDir(m.db, m.cfg.InstancesDir, src)
+	if err != nil {
+		return err
+	}
+	pd, err := WorkDir(m.db, m.cfg.InstancesDir, dst)
+	if err != nil {
+		return err
+	}
 	files := overlayFiles(ps.Dir)
 	if len(files) == 0 {
 		return nil // disks are not created yet - they will be created on first start
 	}
-	if DiskFree(m.cfg.LabsDir) < 2<<30 {
-		return errors.New("недостаточно места на диске для клонирования")
+	if DiskFree(m.cfg.InstancesDir) < 2<<30 {
+		return errors.New("Not enough disk space for cloning")
 	}
 	if err := os.MkdirAll(pd.Dir, 0o750); err != nil {
 		return err
@@ -1091,8 +1054,6 @@ func (m *Manager) CloneFiles(labID, src, dst int64) error {
 	if fileExists(ps.Vars) {
 		_ = copyFile(ps.Vars, pd.Vars)
 	}
-	// the copy references the same snapshot layer, so it must not be deleted
-	_, _ = m.db.Exec(`UPDATE instance_devices SET layer_image_id=(SELECT layer_image_id FROM instance_devices WHERE id=?) WHERE id=?`, src, dst)
 	return nil
 }
 
@@ -1103,10 +1064,18 @@ func (m *Manager) IsStopped(id int64) bool {
 }
 
 // RemoveFiles deletes the files of a removed device and releases network objects.
-func (m *Manager) RemoveFiles(labID, devID int64) {
-	s := &Spec{ID: devID, LabID: labID}
+func (m *Manager) RemoveFiles(instanceID, devID int64) {
+	s := &Spec{ID: devID, InstanceID: instanceID}
+	if inf, err := instances.Device(m.db, devID); err == nil {
+		s.LabID, s.DeviceID, s.Owner = inf.LabID, inf.DeviceID, inf.Owner
+	}
 	m.pl.Release(s)
-	_ = os.RemoveAll(DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, labID, devID).Dir)
+	if dir := workPaths(m.cfg.InstancesDir, s.Owner, s.LabID, s.DeviceID).Dir; dir != "" {
+		_ = os.RemoveAll(dir)
+	}
+	if log := m.paths(s).Log; log != "" {
+		_ = os.Remove(log)
+	}
 	m.mu.Lock()
 	delete(m.locks, devID)
 	delete(m.states, devID)
@@ -1114,9 +1083,77 @@ func (m *Manager) RemoveFiles(labID, devID int64) {
 	m.mu.Unlock()
 }
 
-// RemoveLabDir deletes the lab directory.
-func (m *Manager) RemoveLabDir(labID int64) {
-	_ = os.RemoveAll(filepath.Join(m.cfg.LabsDir, fmt.Sprint(labID)))
+// RemoveLabDir deletes the working directories of all instances of a lab.
+func (m *Manager) RemoveLabDir(labName string) {
+	rows, err := m.db.Query(`SELECT id FROM lab_instances WHERE lab_id=?`, labName)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			m.removeInstanceDirs(id)
+		}
+	}
+}
+
+// RemoveInstanceFiles deletes the working files and logs of one instance; the instance row must still exist.
+func (m *Manager) RemoveInstanceFiles(instanceID int64) {
+	m.removeInstanceDirs(instanceID)
+}
+
+// removeInstanceDirs deletes the working files and logs of one instance: the owner's directory of the
+// laboratory and the logs. The instance row must still exist to name them.
+func (m *Manager) removeInstanceDirs(instanceID int64) {
+	owner, lab, err := instances.Scope(m.db, instanceID)
+	if err != nil {
+		return
+	}
+	if safeElement(owner) && safeElement(lab) {
+		_ = os.RemoveAll(filepath.Join(m.cfg.InstancesDir, owner, lab))
+	}
+	m.RemoveLabLogs(owner, lab)
+}
+
+// RemoveLabLogs deletes the logs of one laboratory of one owner: <logs>/<owner>/<lab>/.
+func (m *Manager) RemoveLabLogs(owner, lab string) {
+	if !safeElement(owner) || !safeElement(lab) {
+		return
+	}
+	_ = os.RemoveAll(filepath.Join(m.cfg.LogsDir, owner, lab))
+}
+
+// RemoveLabLogsOfAll deletes the logs of a laboratory for every owner, as after its rename.
+func (m *Manager) RemoveLabLogsOfAll(lab string) {
+	if !safeElement(lab) {
+		return
+	}
+	owners, err := os.ReadDir(m.cfg.LogsDir)
+	if err != nil {
+		return
+	}
+	for _, o := range owners {
+		if o.IsDir() {
+			_ = os.RemoveAll(filepath.Join(m.cfg.LogsDir, o.Name(), lab))
+		}
+	}
+}
+
+// RemoveDeviceLog deletes the log of one machine of a laboratory for every owner, as after its rename.
+func (m *Manager) RemoveDeviceLog(lab, device string) {
+	if !safeElement(lab) || !safeElement(device) {
+		return
+	}
+	owners, err := os.ReadDir(m.cfg.LogsDir)
+	if err != nil {
+		return
+	}
+	for _, o := range owners {
+		if o.IsDir() {
+			_ = os.Remove(LogFile(m.cfg.LogsDir, o.Name(), lab, device))
+		}
+	}
 }
 
 // WaitLeftStarting waits until the device is no longer in the starting state.
@@ -1258,11 +1295,11 @@ func (m *Manager) StopAll(timeout time.Duration) {
 // StopLab stops all devices of a lab before it is deleted.
 // If the devices do not stop gracefully within timeout, the QEMU processes are forcibly terminated
 // and the state is reset - deleting a lab does not depend on the state of its devices.
-func (m *Manager) StopLab(labID int64, timeout time.Duration) error {
-	inLab := map[int64]bool{}
-	if fl, ok := m.db.Labs.Lab(labID); ok {
+func (m *Manager) StopLab(labName string, timeout time.Duration) error {
+	inLab := map[string]bool{}
+	if fl, ok := m.db.Labs.Lab(labName); ok {
 		for _, d := range fl.Devices {
-			inLab[d.ID] = true
+			inLab[d.Name] = true
 		}
 	}
 	rows, err := m.db.Query(`SELECT r.id,r.device_id FROM instance_devices r`)
@@ -1271,13 +1308,37 @@ func (m *Manager) StopLab(labID int64, timeout time.Duration) error {
 	}
 	ids := []int64{}
 	for rows.Next() {
-		var id, devID int64
+		var id int64
+		var devID string
 		if rows.Scan(&id, &devID) == nil && inLab[devID] {
 			ids = append(ids, id)
 		}
 	}
 	rows.Close()
+	return m.stopMachinesAndWait(ids, timeout)
+}
 
+// StopInstance stops all machines of one instance before the instance is removed with its owner.
+// It has the same timeout behaviour as StopLab.
+func (m *Manager) StopInstance(instanceID int64, timeout time.Duration) error {
+	rows, err := m.db.Query(`SELECT id FROM instance_devices WHERE instance_id=?`, instanceID)
+	if err != nil {
+		return err
+	}
+	ids := []int64{}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	return m.stopMachinesAndWait(ids, timeout)
+}
+
+// stopMachinesAndWait stops the machines with the given row numbers and waits up to timeout for them to stop.
+// Machines still running after that are terminated forcibly.
+func (m *Manager) stopMachinesAndWait(ids []int64, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
 		pending := false
@@ -1312,28 +1373,96 @@ func (m *Manager) StopLab(labID int64, timeout time.Duration) error {
 	return nil
 }
 
-// PruneLab deletes machine directories of a lab that are no longer in the database (removed machines and instances).
-// Directories are named after the instance row's rid, so deletion by topology id does not apply here.
-func (m *Manager) PruneLab(labID int64) {
-	dir := filepath.Join(m.cfg.LabsDir, strconv.FormatInt(labID, 10))
-	ents, err := os.ReadDir(dir)
-	if err != nil {
+// RemoveDeviceFiles deletes the working directory and the log of a machine removed from a laboratory,
+// for every owner of the laboratory.
+func (m *Manager) RemoveDeviceFiles(lab, dev string) {
+	if !safeElement(lab) || !safeElement(dev) {
 		return
 	}
-	for _, e := range ents {
-		rid, perr := strconv.ParseInt(e.Name(), 10, 64)
-		if perr != nil {
-			continue
-		}
-		var n int
-		if m.db.QueryRow(`SELECT COUNT(*) FROM instance_devices WHERE id=?`, rid).Scan(&n) == nil && n == 0 {
-			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
-		}
+	for _, owner := range m.ownerNames() {
+		_ = os.RemoveAll(filepath.Join(m.cfg.InstancesDir, owner, lab, dev))
 	}
+	m.RemoveDeviceLog(lab, dev)
 }
 
-// HasDisks reports whether the instance has working disks (overlays). If it does, the disk cannot be changed without Wipe:
+// ownerNames returns the owner folders under the instances directory: the owners' login names.
+func (m *Manager) ownerNames() []string {
+	ents, err := os.ReadDir(m.cfg.InstancesDir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, e := range ents {
+		if e.IsDir() && safeElement(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+// RenameLabFiles moves the working directories of a laboratory to its new name, for every owner.
+// It returns a function that undoes the moves; the caller runs it if the rename does not complete.
+func (m *Manager) RenameLabFiles(from, to string) (func(), error) {
+	var pairs [][2]string
+	for _, owner := range m.ownerNames() {
+		pairs = append(pairs, [2]string{
+			filepath.Join(m.cfg.InstancesDir, owner, from),
+			filepath.Join(m.cfg.InstancesDir, owner, to),
+		})
+	}
+	return moveDirs(pairs)
+}
+
+// RenameDeviceFiles moves the working directories of a machine to its new name, for every owner of the
+// laboratory. Machines cannot be renamed while running, so no disk is in use during the move.
+// It returns a function that undoes the moves.
+func (m *Manager) RenameDeviceFiles(lab, from, to string) (func(), error) {
+	var pairs [][2]string
+	for _, owner := range m.ownerNames() {
+		base := filepath.Join(m.cfg.InstancesDir, owner, lab)
+		pairs = append(pairs, [2]string{filepath.Join(base, from), filepath.Join(base, to)})
+	}
+	return moveDirs(pairs)
+}
+
+// moveDirs renames every source that exists to its target. If a move fails, the moves made so far are undone.
+// It returns a function that undoes all moves made.
+func moveDirs(pairs [][2]string) (func(), error) {
+	var done [][2]string
+	undo := func() {
+		for i := len(done) - 1; i >= 0; i-- {
+			_ = os.Rename(done[i][1], done[i][0])
+		}
+	}
+	for _, p := range pairs {
+		if _, err := os.Stat(p[0]); err != nil {
+			continue
+		}
+		if err := os.Rename(p[0], p[1]); err != nil {
+			undo()
+			return func() {}, err
+		}
+		done = append(done, p)
+	}
+	return undo, nil
+}
+
+// WorkDir returns the working files of the instance machine with row number rid. Its directory is named
+// after the owner, the laboratory and the machine: <instances>/<owner>/<lab>/<device>/.
+func WorkDir(db *database.DB, instancesDir string, rid int64) (Paths, error) {
+	inf, err := instances.Device(db, rid)
+	if err != nil {
+		return Paths{}, err
+	}
+	return workPaths(instancesDir, inf.Owner, inf.LabID, inf.DeviceID), nil
+}
+
+// HasDisks reports whether the machine has working disks (overlays). If it does, the disk cannot be changed without Wipe:
 // the overlay is bound to the base image that was selected at creation.
-func (m *Manager) HasDisks(labID, rid int64) bool {
-	return len(overlayFiles(DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, labID, rid).Dir)) > 0
+func (m *Manager) HasDisks(rid int64) bool {
+	p, err := WorkDir(m.db, m.cfg.InstancesDir, rid)
+	if err != nil {
+		return false
+	}
+	return len(overlayFiles(p.Dir)) > 0
 }

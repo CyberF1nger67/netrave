@@ -2,14 +2,14 @@ import { currentLanguage, t } from '../i18n';
 
 export function fmtBytes(n: number): string {
   if (!n) return '0';
-  const units = currentLanguage() === 'ru' ? ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ'] : ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = [t('B'), t('KB'), t('MB'), t('GB'), t('TB')];
   let value = n;
   let index = 0;
   while (value >= 1024 && index < units.length - 1) {
     value /= 1024;
     index++;
   }
-  return value.toFixed(index ? 1 : 0) + ' ' + (units[index] ?? 'Б');
+  return value.toFixed(index ? 1 : 0) + ' ' + (units[index] ?? units[0]);
 }
 
 export const fmtTime = (ts: number): string => new Date(ts * 1000).toLocaleString('ru-RU');
@@ -18,19 +18,20 @@ export function fmtUptime(seconds: number): string {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
-  const labels = currentLanguage() === 'ru' ? ['д', 'ч', 'м'] : ['d', 'h', 'm'];
+  const labels = [t('d'), t('h'), t('m')];
   return (days ? `${days}${labels[0]} ` : '') + `${hours}${labels[1]} ${minutes}${labels[2]}`;
 }
 
 export const fmtNum = (n: number): string =>
   Number(n).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
 
-export const fmtPct = (value: number): string => fmtNum(Number(value.toFixed(1))) + '%';
+// The decimal comma is applied explicitly: some Node builds (small-icu) fall back to '.' for ru-RU.
+export const fmtPct = (value: number): string => fmtNum(Number(value.toFixed(1))).replace('.', ',') + '%';
 
 export function fmtDisk(bytes: number): string {
   const mb = bytes / 1048576;
-  if (mb < 1024) return Math.round(mb).toLocaleString(currentLanguage() === 'ru' ? 'ru-RU' : 'en-US') + ' MB';
-  return (mb / 1024).toFixed(2).replace(currentLanguage() === 'ru' ? '.' : '.', currentLanguage() === 'ru' ? ',' : '.') + ' GB';
+  if (mb < 1024) return Math.round(mb).toLocaleString(currentLanguage() === 'ru' ? 'ru-RU' : 'en-US') + ' ' + t('MB');
+  return (mb / 1024).toFixed(2).replace('.', currentLanguage() === 'ru' ? ',' : '.') + ' ' + t('GB');
 }
 
 export const fmtGB = (bytes: number): string =>

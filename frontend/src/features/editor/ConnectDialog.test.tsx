@@ -13,15 +13,15 @@ vi.mock('../../stores/toast', () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
 }));
 
-const pc = (id: number, nics: number): Device => ({ id, nics, name: `pc${id}` } as unknown as Device);
+const pc = (id: number, nics: number): Device => ({ id: `pc${id}`, nics, name: `pc${id}` } as unknown as Device);
 
 describe('ConnectDialog with an already used interface', () => {
   it('offers a new physical interface for the second cable between the same machines', () => {
     const connections: Connection[] = [
-      { id: 1, lab_id: 1, a_type: 'device', a_id: 1, a_if: 0, b_type: 'device', b_id: 2, b_if: 0, up: true },
+      { id: 'c1', key: 'c1', lab_id: 'lab', a_type: 'device', a_id: 'pc1', a_name: 'pc1', a_if: 0, b_type: 'device', b_id: 'pc2', b_name: 'pc2', b_if: 0, up: true },
     ];
     render(
-      <ConnectDialog labId={1} a="d1" b="d2" devices={[pc(1, 1), pc(2, 1)]} networks={[]}
+      <ConnectDialog labId="lab" a="dpc1" b="dpc2" devices={[pc(1, 1), pc(2, 1)]} networks={[]}
         connections={connections} onClose={() => {}} onConnected={() => {}} />,
     );
 

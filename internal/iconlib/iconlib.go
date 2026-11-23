@@ -32,6 +32,7 @@ import (
 	"netrave/internal/database"
 	"netrave/internal/httpx"
 	"netrave/internal/icons"
+	"netrave/internal/msgs"
 	"netrave/internal/names"
 )
 
@@ -42,9 +43,9 @@ const (
 
 var (
 	// ErrNotFound - the entry does not exist or belongs to another user.
-	ErrNotFound = errors.New("иконка не найдена")
+	ErrNotFound = errors.New("Icon not found")
 	// ErrLimit - the user's library is full.
-	ErrLimit = fmt.Errorf("достигнут лимит библиотеки иконок (%d)", MaxPerUser)
+	ErrLimit = msgs.New("Icon library limit reached ({limit})", map[string]string{"limit": fmt.Sprint(MaxPerUser)})
 )
 
 // mu protects reading and writing library files in this process.
@@ -71,10 +72,10 @@ type uploadResult struct {
 	Created bool `json:"created"`
 }
 
-// CleanName validates the icon name: only Latin letters, digits, '-' and '_'.
+// CleanName validates the icon name against the shared object-name rule.
 func CleanName(s string) (string, string) {
 	s = strings.TrimSpace(s)
-	if err := names.Check("название иконки", s); err != nil {
+	if err := names.Check("Icon name", s); err != nil {
 		return "", err.Error()
 	}
 	return s, ""
@@ -377,7 +378,7 @@ func (h *Handler) audit(r *http.Request, action, detail string) {
 func pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return 0, false
 	}
 	return id, true
@@ -387,7 +388,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 	uid := auth.FromContext(r.Context()).User.ID
 	items, err := List(h.DB, h.Icons, uid)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	httpx.JSON(w, http.StatusOK, items)
@@ -398,15 +399,15 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	uid := auth.FromContext(r.Context()).User.ID
 	if !icons.SupportedContentType(r.Header.Get("Content-Type")) {
-		httpx.Err(w, http.StatusUnsupportedMediaType, "поддерживаются PNG, JPEG, WEBP и SVG")
+		httpx.Err(w, http.StatusUnsupportedMediaType, "PNG, JPEG, WEBP and SVG are supported")
 		return
 	}
 	if h.Icons == nil {
-		httpx.Err(w, http.StatusInternalServerError, "каталог иконок не настроен")
+		httpx.Err(w, http.StatusInternalServerError, "The icon catalog is not configured")
 		return
 	}
 	if r.ContentLength > icons.MaxBytes {
-		httpx.Err(w, http.StatusRequestEntityTooLarge, "файл больше 512 КБ")
+		httpx.Err(w, http.StatusRequestEntityTooLarge, "The file is larger than 512 KB")
 		return
 	}
 	name := ""
@@ -422,28 +423,28 @@ func (h *Handler) upload(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			httpx.Err(w, http.StatusRequestEntityTooLarge, "файл больше 512 КБ")
+			httpx.Err(w, http.StatusRequestEntityTooLarge, "The file is larger than 512 KB")
 			return
 		}
-		httpx.Err(w, http.StatusBadRequest, "не удалось прочитать файл")
+		httpx.Err(w, http.StatusBadRequest, "Could not read the file")
 		return
 	}
 	clean, info, err := icons.Clean(data)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, err.Error())
+		httpx.ErrFrom(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := h.Icons.Save(clean, info.Hash); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "не удалось сохранить иконку")
+		httpx.Err(w, http.StatusInternalServerError, "Could not save the icon")
 		return
 	}
 	item, created, err := Remember(h.DB, h.Icons, uid, info, name)
 	if err == ErrLimit {
-		httpx.Err(w, http.StatusBadRequest, err.Error())
+		httpx.ErrFrom(w, http.StatusBadRequest, err)
 		return
 	}
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	code := http.StatusOK
@@ -474,11 +475,11 @@ func (h *Handler) rename(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := Rename(h.DB, h.Icons, uid, id, name)
 	if err == ErrNotFound {
-		httpx.Err(w, http.StatusNotFound, err.Error())
+		httpx.ErrFrom(w, http.StatusNotFound, err)
 		return
 	}
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	h.audit(r, "icon_library_rename", name)
@@ -495,11 +496,11 @@ func (h *Handler) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := Delete(h.DB, h.Icons, uid, id)
 	if err == ErrNotFound {
-		httpx.Err(w, http.StatusNotFound, err.Error())
+		httpx.ErrFrom(w, http.StatusNotFound, err)
 		return
 	}
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	h.Icons.Remove(h.DB, hash)
@@ -516,7 +517,7 @@ func (h *Handler) image(w http.ResponseWriter, r *http.Request) {
 	}
 	data, contentType, err := ImageData(h.DB, h.Icons, uid, id)
 	if err != nil {
-		httpx.Err(w, http.StatusNotFound, "иконка не найдена")
+		httpx.Err(w, http.StatusNotFound, "Icon not found")
 		return
 	}
 	// The file name is the content hash, so the picture can be cached; private, as it depends on the user.

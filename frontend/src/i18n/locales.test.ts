@@ -12,23 +12,24 @@ const RU_YAML = 'locales/ru.yaml';
 // Keys whose Russian text is intentionally identical to the English one: names,
 // abbreviations and product terms that are not translated.
 const SAME_TEXT_ALLOWED = new Set<string>([
-  'Auto',
+  'QEMU · KVM · NETWORK',
+  '{name}: {detail}',
+  '{name}: {detail_key}',
+  '{path} ({size}).',
+  '«{name}»',
+  '{name} ({role})',
+  '{name} → «{lab}»',
+  '{device}: {mode}',
+  'xterm.js',
   'BIOS (SeaBIOS)',
   'CD-ROM',
   'CPU',
-  'Cloud',
-  'Dashboard',
-  'Firewall',
-  'Fit',
   'IP',
   'NAT',
   'NetRave',
   'PID',
-  'Snapshot',
   'UEFI',
   'VNC',
-  'Wipe',
-  'Wipe Lab',
 ]);
 
 const uniqueKeys = [...new Set<string>(EN_KEYS)];
@@ -85,6 +86,6 @@ describe('locales/ru.yaml', () => {
     const text = readFileSync(RU_YAML, 'utf8');
     expect(() => load(text)).not.toThrow();
     // js-yaml throws on a repeated key: the build fails instead of silently keeping the last value.
-    expect(() => load('"Save": "Сохранить"\n"Save": "Сохранить"\n')).toThrow(/duplicated mapping key/);
+    expect(() => load('"Save": "Save"\n"Save": "Save"\n')).toThrow(/duplicated mapping key/);
   });
 });

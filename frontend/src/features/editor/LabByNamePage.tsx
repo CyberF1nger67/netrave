@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { labsApi } from '../../api/endpoints';
 import { t } from '../../i18n';
 import { EditorPage } from './EditorPage';
-import { findFolder, findLab, folderListQuery, labListQuery } from '../../routing/labLookup';
+import { findLab, labListQuery } from '../../routing/labLookup';
 import { paths } from '../../routing/paths';
 
 /**
@@ -21,32 +20,21 @@ export function LabByNamePage({ rootName }: { rootName?: string } = {}) {
   const [search] = useSearchParams();
   const queryClient = useQueryClient();
   const isRoot = rootName !== undefined;
-  const folderName = isRoot ? '' : params['folderName'] ?? '';
-  const labName = isRoot ? rootName : params['labName'] ?? '';
+  const routeLab = params['labName'] ?? '';
+  const labName = isRoot ? rootName : routeLab === 'editor' ? params['folderName'] ?? '' : routeLab;
   const instanceId = Number.parseInt(search.get('instance') ?? search.get('i') ?? '', 10) || 0;
   const rounds = useRef(0);
   const [exhausted, setExhausted] = useState(false);
 
-  const folders = useQuery(folderListQuery);
   const labs = useQuery(labListQuery);
 
-  // `/labs/7/editor` - the numeric editor URL, built by notifications and running labs.
-  const labIdFromUrl = /^\d+$/.test(folderName) && labName === 'editor' ? Number(folderName) : 0;
-  const labById = useQuery({
-    queryKey: ['lab', labIdFromUrl],
-    queryFn: () => labsApi.get(labIdFromUrl),
-    enabled: labIdFromUrl > 0,
-  });
+  const lab = findLab(labs.data ?? [], labName);
+  const loading = labs.isLoading;
+  const searching = !lab && !exhausted;
 
-  const folder = isRoot ? undefined : findFolder(folders.data ?? [], folderName);
-  const folderKnown = isRoot || (folders.isSuccess && folder !== undefined);
-  const lab = folderKnown ? findLab(labs.data ?? [], folder?.id ?? 0, labName) : undefined;
-  const loading = labIdFromUrl > 0 ? labById.isLoading : folders.isLoading || labs.isLoading;
-  // While retries are in progress, the page waits silently: "not found" at that moment would be false.
-  const searching = labIdFromUrl === 0 && !lab && !exhausted;
 
   useEffect(() => {
-    if (labIdFromUrl > 0 || lab || exhausted) return;
+    if (lab || exhausted) return;
     if (rounds.current >= 10) {
       setExhausted(true);
       return;
@@ -57,17 +45,10 @@ export function LabByNamePage({ rootName }: { rootName?: string } = {}) {
       void queryClient.invalidateQueries({ queryKey: ['folders'] });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [labIdFromUrl, lab, folderName, labName, queryClient, exhausted]);
+  }, [lab, labName, queryClient, exhausted]);
 
   if (loading || searching) {
     return <div className="grid min-h-screen place-items-center bg-bg"><div className="text-muted">{t('Loading editor…')}</div></div>;
-  }
-
-  if (labIdFromUrl > 0) {
-    if (!labById.data) {
-      return <div className="grid min-h-screen place-items-center bg-bg"><div className="text-bad">{t('Laboratory not found')}</div></div>;
-    }
-    return <EditorPage labIdOverride={labIdFromUrl} instanceOverride={instanceId || undefined} />;
   }
 
   if (!lab) {
@@ -80,5 +61,5 @@ export function LabByNamePage({ rootName }: { rootName?: string } = {}) {
       </div>
     );
   }
-  return <EditorPage labIdOverride={lab.id} instanceOverride={instanceId || undefined} />;
+  return <EditorPage labName={lab.name} instanceOverride={instanceId || undefined} />;
 }

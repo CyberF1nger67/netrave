@@ -15,11 +15,11 @@ func TestRunningListIncludesStopped(t *testing.T) {
 	dev := e.device(t, lab)
 
 	rec := e.do(t, admin, http.MethodGet, "/api/labs/running", nil)
-	expect(t, rec, http.StatusOK, "список")
+	expect(t, rec, http.StatusOK, "list")
 	var list []RunningLab
 	json.Unmarshal(rec.Body.Bytes(), &list)
 	if len(list) != 0 {
-		t.Fatalf("до запуска список должен быть пуст: %+v", list)
+		t.Fatalf("before start the list must be empty: %+v", list)
 	}
 
 	// The machine was started at some point: the row remains even though the machine is stopped.
@@ -32,11 +32,11 @@ func TestRunningListIncludesStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = e.do(t, admin, http.MethodGet, "/api/labs/running", nil)
-	expect(t, rec, http.StatusOK, "список")
+	expect(t, rec, http.StatusOK, "list")
 	list = nil
 	json.Unmarshal(rec.Body.Bytes(), &list)
 	if len(list) != 1 || list[0].Status != "stopped" || list[0].StartedAt == 0 {
-		t.Fatalf("остановленная запускавшаяся лаборатория должна быть в списке, время запуска сохранено: %+v", list)
+		t.Fatalf("stopped previously started lab must be in the list, start time preserved: %+v", list)
 	}
 
 	// Stopping all machines does not remove the lab: the list is built from the start history in the database.
@@ -44,18 +44,18 @@ func TestRunningListIncludesStopped(t *testing.T) {
 	list = nil
 	json.Unmarshal(rec.Body.Bytes(), &list)
 	if len(list) != 1 || list[0].Status != "stopped" || list[0].Running != 0 {
-		t.Fatalf("после остановки машин лаборатория должна остаться в списке: %+v", list)
+		t.Fatalf("after stopping machines the lab must remain in the list: %+v", list)
 	}
 
 	// Wipe Lab is the only action that removes the lab from the list. The real
 	// handler is called (the machine stop hook is not set, the wipe timestamp is written to the database).
-	rec = e.do(t, admin, http.MethodPost, "/api/labs/"+itoa(lab)+"/wipe", nil)
+	rec = e.do(t, admin, http.MethodPost, "/api/labs/"+labPath(lab)+"/wipe", nil)
 	expect(t, rec, http.StatusOK, "Wipe Lab")
 	rec = e.do(t, admin, http.MethodGet, "/api/labs/running", nil)
 	list = nil
 	json.Unmarshal(rec.Body.Bytes(), &list)
 	if len(list) != 0 {
-		t.Fatalf("после Wipe лаборатория должна исчезнуть из списка: %+v", list)
+		t.Fatalf("after Wipe the lab must disappear from the list: %+v", list)
 	}
 
 	// Restarting the machine returns it to the list.
@@ -67,6 +67,6 @@ func TestRunningListIncludesStopped(t *testing.T) {
 	list = nil
 	json.Unmarshal(rec.Body.Bytes(), &list)
 	if len(list) != 1 || list[0].Status != "stopped" {
-		t.Fatalf("после запуска лаборатория должна вернуться в список: %+v", list)
+		t.Fatalf("after start the lab must return to the list: %+v", list)
 	}
 }

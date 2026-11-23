@@ -9,9 +9,11 @@ package access
 
 import (
 	"database/sql"
+	"strings"
 	"sync"
 
 	"netrave/internal/database"
+	"netrave/internal/labfile"
 	"netrave/internal/permcatalog"
 )
 
@@ -33,7 +35,7 @@ const (
 	MachStop      = "machine.stop"
 	MachRestart   = "machine.restart"
 	MachWipe      = "machine.wipe"
-	MachSnapshot  = "machine.snapshot"
+	MachSave      = "machine.snapshot" // saving machines as images; the stored key is kept for existing roles
 	LinkCreate    = "link.create"
 	LinkDelete    = "link.delete"
 	NetManage     = "net.manage"
@@ -57,32 +59,32 @@ type Perm struct {
 
 // Catalog - all permissions in display order (groups are consecutive).
 var Catalog = []Perm{
-	{LabView, "Просмотр лаборатории и топологии", "Лаборатория"},
-	{LabEditMeta, "Изменение названия и описания", "Лаборатория"},
-	{LabSaveTopo, "Сохранение вида топологии", "Лаборатория"},
-	{LabExport, "Экспорт и копирование лаборатории", "Лаборатория"},
-	{LabDelete, "Удаление лаборатории", "Лаборатория"},
-	{LabManageAcc, "Управление правами других пользователей", "Лаборатория"},
-	{LabWipe, "Wipe лаборатории (сброс всех машин)", "Лаборатория"},
-	{MachAdd, "Добавление машин", "Машины"},
-	{MachEdit, "Изменение параметров машин", "Машины"},
-	{MachMove, "Перемещение по рабочему полю", "Машины"},
-	{MachClone, "Клонирование машин", "Машины"},
-	{MachDelete, "Удаление машин", "Машины"},
-	{MachStart, "Запуск машин", "Машины"},
-	{MachStop, "Остановка и пауза", "Машины"},
-	{MachRestart, "Перезагрузка машин", "Машины"},
-	{MachWipe, "Wipe (сброс состояния машины)", "Машины"},
-	{MachSnapshot, "Снимки состояния", "Машины"},
-	{LinkCreate, "Создание проводов", "Провода и сети"},
-	{LinkDelete, "Удаление проводов", "Провода и сети"},
-	{IfaceManage, "Сетевые интерфейсы машины (число NIC)", "Провода и сети"},
-	{NetManage, "Сети: создание, настройка, удаление", "Провода и сети"},
-	{DiskAttach, "Подключение дисков и образов", "Диски и консоли"},
-	{DiskDetach, "Отключение дисков", "Диски и консоли"},
-	{ConsoleSerial, "Консоль Serial (терминал)", "Диски и консоли"},
-	{ConsoleVNC, "Консоль VNC (экран)", "Диски и консоли"},
-	{ConsoleClipboard, "Копирование и вставка в консоли", "Диски и консоли"},
+	{LabView, "View laboratory and topology", "Laboratory"},
+	{LabEditMeta, "Edit name and description", "Laboratory"},
+	{LabSaveTopo, "Save topology view", "Laboratory"},
+	{LabExport, "Export and copy laboratory", "Laboratory"},
+	{LabDelete, "Delete laboratory", "Laboratory"},
+	{LabManageAcc, "Manage access for other users", "Laboratory"},
+	{LabWipe, "Wipe laboratory", "Laboratory"},
+	{MachAdd, "Add machines", "Machines"},
+	{MachEdit, "Edit machine parameters", "Machines"},
+	{MachMove, "Move machines on canvas", "Machines"},
+	{MachClone, "Clone machines", "Machines"},
+	{MachDelete, "Delete machines", "Machines"},
+	{MachStart, "Start machines", "Machines"},
+	{MachStop, "Stop and pause machines", "Machines"},
+	{MachRestart, "Restart machines", "Machines"},
+	{MachWipe, "Wipe machine state", "Machines"},
+	{MachSave, "Saving images", "Machines"},
+	{LinkCreate, "Create cables", "Cables and networks"},
+	{LinkDelete, "Delete cables", "Cables and networks"},
+	{IfaceManage, "Manage machine network interfaces", "Cables and networks"},
+	{NetManage, "Manage networks", "Cables and networks"},
+	{DiskAttach, "Attach disks and images", "Disks and consoles"},
+	{DiskDetach, "Detach disks", "Disks and consoles"},
+	{ConsoleSerial, "Serial console", "Disks and consoles"},
+	{ConsoleVNC, "VNC console", "Disks and consoles"},
+	{ConsoleClipboard, "Copy and paste in the console", "Disks and consoles"},
 }
 
 var known = func() map[string]string {
@@ -125,12 +127,12 @@ func DefaultPublic(q Querier, ownerID int64) string {
 // A role defines capabilities, while lab visibility is determined by the role's folders and public access.
 var roleLabGrants = map[string][]string{
 	permcatalog.LabView:       {LabView},
-	permcatalog.LabEdit:       {LabEditMeta, LabSaveTopo, MachEdit, MachMove, LinkCreate, LinkDelete, IfaceManage, DiskAttach, DiskDetach, MachSnapshot},
+	permcatalog.LabEdit:       {LabEditMeta, LabSaveTopo, MachEdit, MachMove, LinkCreate, LinkDelete, IfaceManage, DiskAttach, DiskDetach, MachSave},
 	permcatalog.LabDelete:     {LabDelete, MachDelete},
 	permcatalog.LabCopy:       {LabExport, MachClone},
 	permcatalog.LabStartStop:  {MachStart, MachStop},
 	permcatalog.LabWipe:       {LabWipe, MachWipe},
-	permcatalog.LabTopology:   {LabSaveTopo, MachAdd, MachEdit, MachMove, MachClone, LinkCreate, LinkDelete, IfaceManage, NetManage, DiskAttach, DiskDetach, MachSnapshot},
+	permcatalog.LabTopology:   {LabSaveTopo, MachAdd, MachEdit, MachMove, MachClone, LinkCreate, LinkDelete, IfaceManage, NetManage, DiskAttach, DiskDetach, MachSave},
 	permcatalog.MachStartStop: {MachStart, MachStop},
 	permcatalog.MachRestart:   {MachRestart},
 	permcatalog.MachWipe:      {MachWipe},
@@ -323,21 +325,38 @@ func Compose(admin bool, userID, ownerID int64, publicLevel string, grants map[s
 	return out
 }
 
-// Grants returns the user's explicit permissions across all labs (lab_id -> permission -> value).
-func Grants(db *database.DB, userID int64) (map[int64]map[string]bool, error) {
-	out := map[int64]map[string]bool{}
-	for _, l := range db.Labs.Labs() {
-		for _, p := range l.Permissions {
-			if p.UserID != userID || !p.Value {
-				continue
-			}
-			if out[l.ID] == nil {
-				out[l.ID] = map[string]bool{}
-			}
-			out[l.ID][p.Perm] = true
+// LabGrants returns the permissions written for the user in the lab file, including the
+// entries of the user's roles. A direct user entry overrides a role entry.
+func LabGrants(l labfile.Lab, userID int64, roleIDs []int64) map[string]bool {
+	out := map[string]bool{}
+	roles := map[int64]bool{}
+	for _, id := range roleIDs {
+		roles[id] = true
+	}
+	for _, p := range l.Permissions {
+		if p.RoleID != 0 && roles[p.RoleID] && p.Value {
+			out[p.Perm] = true
 		}
 	}
-	return out, nil
+	for _, p := range l.Permissions {
+		if p.UserID == userID {
+			out[p.Perm] = p.Value
+		}
+	}
+	return out
+}
+
+// LabVisible reports whether the lab is visible to the user: an administrator, the owner,
+// public access or a lab.view permission written for the user or one of their roles.
+func LabVisible(db *database.DB, l labfile.Lab, userID int64, admin bool) (bool, error) {
+	if admin || l.OwnerID == userID || l.PublicLevel != "none" {
+		return true, nil
+	}
+	roles, err := UserRoleIDs(db, userID)
+	if err != nil {
+		return false, err
+	}
+	return LabGrants(l, userID, roles)[LabView], nil
 }
 
 // UserRoleIDs returns the user's roles.
@@ -351,63 +370,67 @@ func UserRoleIDs(db *database.DB, uid int64) ([]int64, error) {
 	return out, nil
 }
 
-// FolderAllowed reports whether the lab is available to the user by folder placement: a lab without
-// a folder is available, a lab in a folder - only if the folder (or its ancestor) is assigned to the user directly
-// or through roles. The caller checks that the lab exists.
-func FolderAllowed(db *database.DB, labID, userID int64) (bool, error) {
-	folder, placed := db.Folders.Placement(labID)
-	if !placed {
-		return true, nil
-	}
-	roles, err := UserRoleIDs(db, userID)
-	if err != nil {
-		return false, err
-	}
-	return db.Folders.VisibleFolders(userID, roles)[folder], nil
-}
-
-// FolderMemberLabs returns labs located in folders available to the user directly or through
-// roles. The contents of an assigned folder are visible to role members, even if the lab has no public access.
-func FolderMemberLabs(db *database.DB, userID int64) (map[int64]bool, error) {
-	roles, err := UserRoleIDs(db, userID)
+// VisibleFolders returns the folders the user may see. A folder is visible when it contains,
+// or has in its subtree, a lab the user can access; ancestors are included so the path to a
+// visible folder is complete.
+func VisibleFolders(db *database.DB, userID int64, admin bool) (map[string]bool, error) {
+	tree, err := db.Labs.Tree()
 	if err != nil {
 		return nil, err
 	}
-	visible := db.Folders.VisibleFolders(userID, roles)
-	out := map[int64]bool{}
-	for lab, folder := range db.Folders.Placements() {
-		if visible[folder] {
-			out[lab] = true
+	out := map[string]bool{}
+	for _, entry := range tree.Labs {
+		l, ok := db.Labs.Lab(entry.Name)
+		if !ok {
+			continue
+		}
+		visible, err := LabVisible(db, l, userID, admin)
+		if err != nil {
+			return nil, err
+		}
+		if !visible {
+			continue
+		}
+		folder := entry.Folder
+		for folder != "" {
+			out[folder] = true
+			if i := strings.LastIndex(folder, "/"); i >= 0 {
+				folder = folder[:i]
+			} else {
+				folder = ""
+			}
 		}
 	}
 	return out, nil
 }
 
+// FolderVisible reports whether the user sees the folder.
+func FolderVisible(db *database.DB, userID int64, admin bool, folder string) (bool, error) {
+	if folder == "" {
+		return true, nil
+	}
+	visible, err := VisibleFolders(db, userID, admin)
+	if err != nil {
+		return false, err
+	}
+	return visible[folder], nil
+}
+
 // Perms returns the user's effective permissions on the lab. If the lab does not exist - sql.ErrNoRows.
-func Perms(db *database.DB, labID, userID int64, admin bool) (map[string]bool, error) {
-	l, ok := db.Labs.Lab(labID)
+func Perms(db *database.DB, labName string, userID int64, admin bool) (map[string]bool, error) {
+	l, ok := db.Labs.Lab(labName)
 	if !ok {
 		return nil, sql.ErrNoRows
 	}
-	// Folders are assigned by an administrator: a lab in someone else's (unassigned) folder does not exist for the user.
-	if !admin {
-		allowed, err := FolderAllowed(db, labID, userID)
+	grants := map[string]bool{}
+	if !admin && userID != l.OwnerID {
+		roles, err := UserRoleIDs(db, userID)
 		if err != nil {
 			return nil, err
 		}
-		if !allowed {
-			return nil, sql.ErrNoRows
+		for k, v := range LabGrants(l, userID, roles) {
+			grants[k] = v
 		}
-	}
-	grants := map[string]bool{}
-	if !admin && userID != l.OwnerID {
-		for _, p := range l.Permissions {
-			if p.UserID == userID && p.Value {
-				grants[p.Perm] = true
-			}
-		}
-	}
-	if !admin {
 		roleGrants, err := RoleLabGrants(db, userID)
 		if err != nil {
 			return nil, err

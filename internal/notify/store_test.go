@@ -20,10 +20,10 @@ func TestIdleUsersAreReleasedUnlessConnected(t *testing.T) {
 	st.list(3, later, connected, false, "", 10) // access triggers cleanup
 
 	if _, ok := st.users[1]; ok {
-		t.Fatal("список неактивного пользователя должен освободиться")
+		t.Fatal("inactive user's list must be released")
 	}
 	if b, ok := st.users[2]; !ok || len(b.items) != 1 {
-		t.Fatal("список подключённого пользователя должен сохраниться")
+		t.Fatal("connected user's list must be kept")
 	}
 }
 
@@ -34,13 +34,13 @@ func TestStoreDuplicateRules(t *testing.T) {
 	now := time.Now()
 	it := Item{Level: Warning, Category: CatSystem, Title: "t", Body: "b"}
 	if _, ok := st.add(1, it, now, none); !ok {
-		t.Fatal("первое уведомление должно записаться")
+		t.Fatal("first notification must be stored")
 	}
 	if _, ok := st.add(1, it, now, none); ok {
-		t.Fatal("дубликат непрочитанного не должен записываться")
+		t.Fatal("duplicate unread item must not be stored")
 	}
 	st.readAll(1, now)
 	if _, ok := st.add(1, it, now, none); !ok {
-		t.Fatal("после прочтения такое же уведомление — новое событие")
+		t.Fatal("after reading, the same notification is a new event")
 	}
 }

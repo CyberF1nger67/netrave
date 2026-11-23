@@ -31,13 +31,13 @@ func TestNATRulesSharedCloud(t *testing.T) {
 func TestNATRulesWithoutEgressOrNAT(t *testing.T) {
 	nat, fwd := natRules("", true, nil)
 	if len(nat) != 0 {
-		t.Fatalf("без выхода наружу masquerade быть не должно: %v", nat)
+		t.Fatalf("masquerade must not be present without outbound access: %v", nat)
 	}
 	if fwd[len(fwd)-1] != `iifname "nrn*" drop` {
-		t.Fatalf("последнее правило должно запрещать прочий трафик nrn*: %v", fwd)
+		t.Fatalf("the last rule must drop other nrn* traffic: %v", fwd)
 	}
 	if _, fwd2 := natRules("eth0", false, nil); strings.Contains(strings.Join(fwd2, "|"), "nrnat") {
-		t.Fatalf("без активного NAT правил для nrnat быть не должно: %v", fwd2)
+		t.Fatalf("there must be no NAT rules for nrnat without active NAT: %v", fwd2)
 	}
 }
 
@@ -55,10 +55,10 @@ func TestNATRulesBridgeAcceptBeforeDrop(t *testing.T) {
 		}
 	}
 	if count != 1 {
-		t.Fatalf("правило моста должно быть ровно одно: %v", fwd)
+		t.Fatalf("there must be exactly one bridge rule: %v", fwd)
 	}
 	if fwd[len(fwd)-1] != `iifname "nrn*" drop` || idx >= len(fwd)-1 {
-		t.Fatalf("правило моста должно идти до drop: %v", fwd)
+		t.Fatalf("bridge rule must come before drop: %v", fwd)
 	}
 }
 
@@ -76,28 +76,28 @@ func TestIsolationScriptGroups(t *testing.T) {
 	}
 	for _, m := range mustContain {
 		if !strings.Contains(s, m) {
-			t.Fatalf("в сценарии нет строки %q:\n%s", m, s)
+			t.Fatalf("scenario has no line %q:\n%s", m, s)
 		}
 	}
 	if strings.Count(s, "nrt2an0\" } oifname") != 1 {
-		t.Fatalf("дубликат порта не удалён:\n%s", s)
+		t.Fatalf("duplicate port was not removed:\n%s", s)
 	}
 }
 
 // The script must be syntactically valid for nft: check without applying (-c). Requires root and nft.
 func TestIsolationScriptIsValidNFT(t *testing.T) {
 	if os.Geteuid() != 0 {
-		t.Skip("нужен root для nft")
+		t.Skip("requires root for nft")
 	}
 	if _, err := exec.LookPath("nft"); err != nil {
-		t.Skip("nft не установлен")
+		t.Skip("nft is not installed")
 	}
 	script := isolationScript(map[string][]string{"1:1": {"nrt1an0", "nrt2an0"}, "2:1": {"nrt3an0"}}) +
 		natScriptForCheck()
 	cmd := exec.Command("nft", "-c", "-f", "-")
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("nft отклонил сценарий: %v\n%s\n---\n%s", err, out, script)
+		t.Fatalf("nft rejected the scenario: %v\n%s\n---\n%s", err, out, script)
 	}
 }
 
@@ -120,7 +120,7 @@ func TestSharedNATFieldsAreFixed(t *testing.T) {
 	// Shared cloud: the gateway is inside the subnet, the DHCP pool is inside the subnet and excludes the gateway.
 	subnet, gw, ds, de := natcloud.Fields()
 	if subnet != "10.77.0.0/16" || gw != "10.77.0.1" || ds != "10.77.0.10" || de != "10.77.255.250" {
-		t.Fatalf("параметры облака: %s %s %s %s", subnet, gw, ds, de)
+		t.Fatalf("cloud parameters: %s %s %s %s", subnet, gw, ds, de)
 	}
 }
 
@@ -134,6 +134,6 @@ func TestTapNameRoundTrip(t *testing.T) {
 		t.Fatalf("parseTap(%q) = %d, %v", name, rid, ok)
 	}
 	if _, err := tapName(1<<60, 0); err == nil {
-		t.Fatal("слишком длинное имя TAP должно отклоняться")
+		t.Fatal("too long TAP name must be rejected")
 	}
 }

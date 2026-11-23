@@ -63,12 +63,12 @@ func (h *Handler) templateQuality(templateID int64) catalog.VNCQuality {
 func (h *Handler) getQuality(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	info, code, message := h.deviceAccess(r, id, "vnc")
 	if code != 0 {
-		httpx.Err(w, code, message)
+		httpx.ErrFrom(w, code, message)
 		return
 	}
 	defaults := h.templateQuality(info.templateID)
@@ -79,12 +79,12 @@ func (h *Handler) getQuality(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) putQuality(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	info, code, message := h.deviceAccess(r, id, "vnc")
 	if code != 0 {
-		httpx.Err(w, code, message)
+		httpx.ErrFrom(w, code, message)
 		return
 	}
 	var q catalog.VNCQuality

@@ -11,6 +11,7 @@ import (
 	"netrave/internal/auth"
 	"netrave/internal/database"
 	"netrave/internal/journal"
+	"netrave/internal/labfile"
 	"netrave/internal/labtest"
 	"netrave/internal/qemu"
 )
@@ -26,35 +27,35 @@ func TestRunningListVisibilityAndStatus(t *testing.T) {
 	devA := e.device(t, labA)
 	e.runInstance(t, labA, devA, u2.id, "running", os.Getpid(), 1000)
 
-	labB := e.lab(t, admin.id) // the administrator's lab with a dead QEMU process in the administrator's instance
+	labB := e.namedLab(t, admin.id, "labB") // the administrator's lab with a dead QEMU process in the administrator's instance
 	devB := e.device(t, labB)
 	e.runInstance(t, labB, devB, admin.id, "running", 2147483646, 0)
 
-	labC := e.lab(t, u1.id) // u1's lab without running machines - must not appear in the list
+	labC := e.namedLab(t, u1.id, "labC") // u1's lab without running machines - must not appear in the list
 	e.device(t, labC)
 
 	get := func(u sess) []RunningLab {
 		t.Helper()
 		var out []RunningLab
 		rec := e.do(t, u, http.MethodGet, "/api/labs/running", nil)
-		expect(t, rec, http.StatusOK, "список запущенных")
+		expect(t, rec, http.StatusOK, "running list")
 		decodeJSON(t, rec.Body.Bytes(), &out)
 		return out
 	}
 
 	adminList := get(admin)
 	if len(adminList) != 2 {
-		t.Fatalf("администратор должен видеть 2 запущенные лаборатории, видит %d", len(adminList))
+		t.Fatalf("administrator must see 2 running labs, sees %d", len(adminList))
 	}
-	byID := map[int64]RunningLab{}
+	byID := map[string]RunningLab{}
 	for _, l := range adminList {
 		byID[l.ID] = l
 	}
 	if l := byID[labA]; l.Owner != "u2" || l.Status != "running" || l.Running != 1 || l.Devices != 1 || l.StartedAt != 1000 {
-		t.Fatalf("сводка лаборатории u2 неверна: %+v", l)
+		t.Fatalf("summary of u2's lab is wrong: %+v", l)
 	}
 	if l := byID[labB]; l.Status != "stale" || l.Stale != 1 {
-		t.Fatalf("процесс QEMU не найден, статус должен быть stale: %+v", l)
+		t.Fatalf("QEMU process not found, status must be stale: %+v", l)
 	}
 
 	// The user sees their own rows. Other users' instances (even opened ones) are not
@@ -62,11 +63,11 @@ func TestRunningListVisibilityAndStatus(t *testing.T) {
 	// u1 owns labC, but without running machines it is not in the list; other users' opened labs are not visible either.
 	u1List := get(u1)
 	if len(u1List) != 0 {
-		t.Fatalf("u1 не должен видеть ни одной строки, видит %d: %+v", len(u1List), u1List)
+		t.Fatalf("u1 must not see any rows, sees %d: %+v", len(u1List), u1List)
 	}
 	for _, l := range u1List {
 		if l.ID == labC {
-			t.Fatalf("лаборатория без истории запуска не должна показываться: %+v", l)
+			t.Fatalf("lab without start history must not be shown: %+v", l)
 		}
 	}
 	// Own lab - with permissions; another user's lab (opened by the administrator but with its own instance
@@ -83,13 +84,13 @@ func TestRunningListVisibilityAndStatus(t *testing.T) {
 		}
 	}
 	if ownRunning == nil || !ownRunning.CanOpen || !ownRunning.CanWipe {
-		t.Fatalf("u2 должен видеть свою запущенную лабораторию с правами открыть и сбросить: %+v", u2List)
+		t.Fatalf("u2 must see their running lab with the rights to open and wipe: %+v", u2List)
 	}
 	if foreign != nil && (foreign.CanOpen || foreign.CanWipe || foreign.CanStart) {
-		t.Fatalf("чужая лаборатория не должна давать прав: %+v", foreign)
+		t.Fatalf("foreign lab must not grant rights: %+v", foreign)
 	}
 	if adminList := get(admin); len(adminList) != 2 {
-		t.Fatalf("администратор должен видеть обе запущенные лаборатории")
+		t.Fatalf("administrator must see both running labs")
 	}
 }
 
@@ -112,21 +113,21 @@ func TestWipeLabPermissionAndEffects(t *testing.T) {
 	u1 := e.user(t, "u1", "user")
 	lab := e.lab(t, u1.id)
 	e.device(t, lab)
-	e.device(t, lab)
+	labtest.Device(t, e.db, lab, labfile.Device{Name: "pc2"})
 
 	// A user without lab.wipe cannot wipe the lab.
 	other := e.user(t, "u3", "user")
 	labtest.Perm(t, e.db, lab, other.id, "lab.view", true)
-	expect(t, e.do(t, other, http.MethodPost, "/api/labs/"+itoa(lab)+"/wipe", nil), http.StatusForbidden, "wipe без lab.wipe")
+	expect(t, e.do(t, other, http.MethodPost, "/api/labs/"+labPath(lab)+"/wipe", nil), http.StatusForbidden, "wipe without lab.wipe")
 	if len(wiped) != 0 {
-		t.Fatal("при отказе в праве ничего не должно выполняться")
+		t.Fatal("nothing must run when the permission is denied")
 	}
 
 	// The administrator wipes another user's lab.
-	expect(t, e.do(t, admin, http.MethodPost, "/api/labs/"+itoa(lab)+"/wipe", nil), http.StatusOK, "wipe администратором")
+	expect(t, e.do(t, admin, http.MethodPost, "/api/labs/"+labPath(lab)+"/wipe", nil), http.StatusOK, "wipe by administrator")
 	// Wipe affects the administrator's instance (their own by default): two machines, each wiped.
 	if len(wiped) != 2 {
-		t.Fatalf("сброшены не все машины экземпляра: %v", wiped)
+		t.Fatalf("not all machines of the instance were wiped: %v", wiped)
 	}
 
 	wipes, err := db.Journal.LabWipes(lab, 10)
@@ -134,7 +135,7 @@ func TestWipeLabPermissionAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(wipes) != 1 || wipes[0].Username != "admin" || wipes[0].Data["devices"] != float64(2) {
-		t.Fatalf("операция Wipe не записана в журнал: %+v", wipes)
+		t.Fatalf("Wipe operation was not written to the journal: %+v", wipes)
 	}
 	admins, err := db.Journal.Tail(10, func(e journal.Entry) bool {
 		return e.Action == "admin_lab_action" && e.Username == "admin"
@@ -143,13 +144,13 @@ func TestWipeLabPermissionAndEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(admins) == 0 {
-		t.Fatal("действие администратора в чужой лаборатории не записано в журнал")
+		t.Fatal("administrator action in a foreign lab was not written to the journal")
 	}
-	expect(t, e.do(t, admin, http.MethodGet, "/api/labs/"+itoa(lab)+"/wipes", nil), http.StatusOK, "история wipe")
+	expect(t, e.do(t, admin, http.MethodGet, "/api/labs/"+labPath(lab)+"/wipes", nil), http.StatusOK, "wipe history")
 }
 
 // runInstance creates the user's instance (like the application) and its machine in the given state.
-func (e *tenv) runInstance(t *testing.T, lab, dev, user int64, state string, pid int, started int64) int64 {
+func (e *tenv) runInstance(t *testing.T, lab, dev string, user int64, state string, pid int, started int64) int64 {
 	t.Helper()
 	if _, err := e.db.Exec(`INSERT OR IGNORE INTO lab_instances(lab_id,user_id) VALUES(?,?)`, lab, user); err != nil {
 		t.Fatal(err)
@@ -179,9 +180,9 @@ func TestRunningListShowsOwnInstanceInForeignLab(t *testing.T) {
 
 	var out []RunningLab
 	rec := e.do(t, guest, http.MethodGet, "/api/labs/running", nil)
-	expect(t, rec, http.StatusOK, "список запущенных")
+	expect(t, rec, http.StatusOK, "running list")
 	decodeJSON(t, rec.Body.Bytes(), &out)
 	if len(out) != 1 || out[0].InstanceUser != "guest" || !out[0].Own {
-		t.Fatalf("свой экземпляр в чужой лаборатории не виден: %+v", out)
+		t.Fatalf("own instance in a foreign lab is not visible: %+v", out)
 	}
 }

@@ -24,29 +24,29 @@ func (h *Handler) iconUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !lab.Perms[access.MachAdd] && !lab.Perms[access.MachEdit] {
-		httpx.Err(w, http.StatusForbidden, "нет права: "+access.Title(access.MachAdd))
+		httpx.ErrKey(w, http.StatusForbidden, "No permission: {permission_key}", map[string]string{"permission_key": access.Title(access.MachAdd)})
 		return
 	}
 	if !icons.SupportedContentType(r.Header.Get("Content-Type")) {
-		httpx.Err(w, http.StatusUnsupportedMediaType, "поддерживаются PNG, JPEG, WEBP и SVG")
+		httpx.Err(w, http.StatusUnsupportedMediaType, "PNG, JPEG, WEBP and SVG are supported")
 		return
 	}
 	if h.Icons == nil {
-		httpx.Err(w, http.StatusInternalServerError, "каталог иконок не настроен")
+		httpx.Err(w, http.StatusInternalServerError, "The icon catalog is not configured")
 		return
 	}
 	if r.ContentLength > icons.MaxBytes {
-		httpx.Err(w, http.StatusRequestEntityTooLarge, "файл больше 512 КБ")
+		httpx.Err(w, http.StatusRequestEntityTooLarge, "The file is larger than 512 KB")
 		return
 	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, icons.MaxBytes))
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			httpx.Err(w, http.StatusRequestEntityTooLarge, "файл больше 512 КБ")
+			httpx.Err(w, http.StatusRequestEntityTooLarge, "The file is larger than 512 KB")
 			return
 		}
-		httpx.Err(w, http.StatusBadRequest, "не удалось прочитать файл")
+		httpx.Err(w, http.StatusBadRequest, "Could not read the file")
 		return
 	}
 	clean, info, err := icons.Clean(data)
@@ -55,7 +55,7 @@ func (h *Handler) iconUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.Icons.Save(clean, info.Hash); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "не удалось сохранить иконку")
+		httpx.Err(w, http.StatusInternalServerError, "Could not save the icon")
 		return
 	}
 	// The uploaded picture also goes into the user's library (it can be chosen for another machine).
@@ -74,12 +74,12 @@ func (h *Handler) iconGet(w http.ResponseWriter, r *http.Request) {
 	}
 	hash := r.PathValue("hash")
 	if !icons.ValidHash(hash) {
-		httpx.Err(w, http.StatusNotFound, "иконка не найдена")
+		httpx.Err(w, http.StatusNotFound, "Icon not found")
 		return
 	}
 	// The icon is served if it is used by a machine of this lab or by a template (a template icon is available to everyone).
 	inLab := false
-	if fl, ok := labData(h.DB, lab.ID); ok {
+	if fl, ok := labData(h.DB, lab.Name); ok {
 		for _, d := range fl.Devices {
 			if d.CustomIcon == hash {
 				inLab = true
@@ -95,13 +95,13 @@ func (h *Handler) iconGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if tpl == 0 {
-			httpx.Err(w, http.StatusNotFound, "иконка не найдена")
+			httpx.Err(w, http.StatusNotFound, "Icon not found")
 			return
 		}
 	}
 	data, err := h.Icons.Read(hash)
 	if err != nil {
-		httpx.Err(w, http.StatusNotFound, "иконка не найдена")
+		httpx.Err(w, http.StatusNotFound, "Icon not found")
 		return
 	}
 	// The file name is the content hash, so the icon is cached for a long time; private, as access depends on the user.
@@ -116,17 +116,17 @@ func (h *Handler) iconGet(w http.ResponseWriter, r *http.Request) {
 // The validated file is marked fresh (see icons.Sweep) so it is not swept before saving.
 func (h *Handler) checkIcon(icon, custom string) error {
 	if custom != "" && !h.Icons.Exists(custom) {
-		return errors.New("иконка не найдена: загрузите изображение заново")
+		return errors.New("Icon not found: upload the image again")
 	}
 	if !DeviceIcons[icon] {
-		return errors.New("иконка: стандартная, custom или пусто (автоматически)")
+		return errors.New("Icon: standard, custom or empty (automatic)")
 	}
 	if icon == "custom" && custom == "" {
-		return errors.New("сначала загрузите свою иконку")
+		return errors.New("Upload your icon first")
 	}
 	if custom != "" {
 		if !icons.ValidHash(custom) || !h.Icons.Exists(custom) {
-			return errors.New("иконка не найдена: загрузите изображение заново")
+			return errors.New("Icon not found: upload the image again")
 		}
 		_ = h.Icons.Touch(custom)
 	}

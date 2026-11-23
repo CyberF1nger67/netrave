@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -44,8 +43,14 @@ func securityHeaders(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
+		// The two style hashes are the only inline styles xterm.js writes when its WebGL renderer
+		// is active: an empty <style> element (sha256 of ""), and the scrollbar slider rule, whose
+		// text depends on THEME.foreground in features/consoles/XtermTerminal.ts and on the pinned
+		// @xterm/xterm version. Recompute the slider hash when either changes.
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'")
+			"default-src 'self'; img-src 'self' data: blob:; "+
+				"style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=' 'sha256-DQ1NtE2M/qQIFOAYXq4NKJSK1ReynML+f0ZuWUNVex0='; "+
+				"script-src 'self'; connect-src 'self' ws: wss:; frame-ancestors 'none'")
 		if len(r.URL.Path) < 5 || r.URL.Path[:5] != "/api/" {
 			h.Set("Cache-Control", "no-cache")
 		} else {
@@ -65,9 +70,6 @@ func Run(cfg *config.Config) error {
 		return fmt.Errorf("database: %w", err)
 	}
 	defer db.Close()
-	if err := db.AttachFolders(filepath.Join(cfg.LabsDir, "folders.yaml")); err != nil {
-		return fmt.Errorf("folders: %w", err)
-	}
 	if err := db.AttachLabs(cfg.LabsDir); err != nil {
 		return fmt.Errorf("labs: %w", err)
 	}
@@ -138,7 +140,7 @@ func Run(cfg *config.Config) error {
 				"disk_free":      diskFree,
 				"disk_total":     diskTotal,
 				"data_dir":       cfg.DataDir,
-				"images_dir":     cfg.ImagesDir,
+				"disks_dir":      cfg.DisksDir,
 				"labs_dir":       cfg.LabsDir,
 				"listen_addr":    cfg.Addr,
 				"qemu_binary":    cfg.QEMUPath,
@@ -157,9 +159,11 @@ func Run(cfg *config.Config) error {
 	iconStore := icons.New(cfg.IconsDir)
 	labsH := &labs.Handler{
 		DB: db, Auth: as, M: mgr, Notify: notifySvc, Icons: iconStore,
-		Cleanup: func(labID int64, ids []int64) {
-			// ids - topology ids; machine directories are named after instance rids, so cleanup is by the database
-			mgr.PruneLab(labID)
+		Cleanup: func(labName string, deviceNames []string) {
+			// Machine directories and logs are named after the laboratory and the device, which are gone now.
+			for _, dev := range deviceNames {
+				mgr.RemoveDeviceFiles(labName, dev)
+			}
 		},
 		LabRemoved: mgr.RemoveLabDir,
 		NetChanged: func() {
@@ -178,19 +182,19 @@ func Run(cfg *config.Config) error {
 			}
 			return out
 		},
-		CableSet: func(instID, connID int64, up bool) error {
-			return nm.SetCable(instID, connID, up, mgr.SetNICLink)
+		CableSet: func(labName string, instID int64, key string, up bool) error {
+			return nm.SetCable(labName, instID, key, up, mgr.SetNICLink)
 		},
-		CableAttach: func(connID int64) []error {
-			return nm.AttachLive(connID, mgr.SetNICLink, mgr.HotplugNIC)
+		CableAttach: func(labName, key string) []error {
+			return nm.AttachLive(labName, key, mgr.SetNICLink, mgr.HotplugNIC)
 		},
 		CablePlan: nm.PlanDetach,
 		CableDetach: func(plugs []network.Plug) []error {
 			return nm.Detach(plugs, mgr.SetNICLink, mgr.UnplugNIC)
 		},
 		NetworkDiag: nm.Diagnostics,
-		StopLab: func(labID int64) error {
-			return mgr.StopLab(labID, 60*time.Second)
+		StopLab: func(labName string) error {
+			return mgr.StopLab(labName, 60*time.Second)
 		},
 	}
 	labsH.Register(mux)

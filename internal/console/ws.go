@@ -44,17 +44,17 @@ type wsConn struct {
 // checkUpgrade validates the WebSocket handshake headers without writing a response.
 func checkUpgrade(r *http.Request) error {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return errors.New("ожидается WebSocket-соединение")
+		return errors.New("A WebSocket connection is expected")
 	}
 	if !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
-		return errors.New("ожидается Connection: Upgrade")
+		return errors.New("Connection: Upgrade is expected")
 	}
 	if r.Header.Get("Sec-WebSocket-Version") != "13" {
-		return errors.New("поддерживается только WebSocket версии 13")
+		return errors.New("Only WebSocket version 13 is supported")
 	}
 	raw, err := base64.StdEncoding.DecodeString(r.Header.Get("Sec-WebSocket-Key"))
 	if err != nil || len(raw) != 16 {
-		return errors.New("некорректный Sec-WebSocket-Key")
+		return errors.New("Invalid Sec-WebSocket-Key")
 	}
 	return nil
 }
@@ -63,7 +63,7 @@ func checkUpgrade(r *http.Request) error {
 func upgrade(w http.ResponseWriter, r *http.Request) (*wsConn, error) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		return nil, errors.New("сервер не поддерживает переход на WebSocket")
+		return nil, errors.New("The server does not support upgrading to WebSocket")
 	}
 	c, rw, err := hj.Hijack()
 	if err != nil {
@@ -98,7 +98,7 @@ func (ws *wsConn) readMessage() (byte, []byte, error) {
 		fin := hdr[0]&0x80 != 0
 		op := hdr[0] & 0x0f
 		if hdr[1]&0x80 == 0 {
-			return 0, nil, errors.New("клиент должен маскировать кадры")
+			return 0, nil, errors.New("The client must mask frames")
 		}
 		n := uint64(hdr[1] & 0x7f)
 		switch n {
@@ -116,7 +116,7 @@ func (ws *wsConn) readMessage() (byte, []byte, error) {
 			n = binary.BigEndian.Uint64(b[:])
 		}
 		if n > maxMsg || uint64(len(msg))+n > maxMsg {
-			return 0, nil, errors.New("слишком большое сообщение")
+			return 0, nil, errors.New("The message is too large")
 		}
 		var key [4]byte
 		if _, err := io.ReadFull(ws.rw, key[:]); err != nil {
@@ -145,7 +145,7 @@ func (ws *wsConn) readMessage() (byte, []byte, error) {
 		case opCont:
 			msg = append(msg, payload...)
 		default:
-			return 0, nil, errors.New("неизвестный тип кадра")
+			return 0, nil, errors.New("Unknown frame type")
 		}
 		if fin {
 			return msgOp, msg, nil

@@ -15,6 +15,7 @@ backend:
 	go build -trimpath -o netrave .
 
 test:
+	python3 tools/check-i18n.py
 	go test ./...
 	cd frontend && npm run typecheck && npm test
 

@@ -46,29 +46,29 @@ func TestMutualExclusion(t *testing.T) {
 
 	status := Read()
 	if !status.UKSM.Enabled || status.KSM.Enabled {
-		t.Fatalf("начальное состояние: %+v", status)
+		t.Fatalf("initial state: %+v", status)
 	}
 
-	if err := SetEnabled(KindKSM, true); err != nil {
+	if err := SYSFS.Set(KindKSM, true); err != nil {
 		t.Fatal(err)
 	}
 	status = Read()
 	if !status.KSM.Enabled || status.UKSM.Enabled {
-		t.Fatalf("включение KSM должно выключить UKSM: %+v", status)
+		t.Fatalf("enabling KSM must disable UKSM: %+v", status)
 	}
 	if got := read(t, dirUKSM, "run"); got != "0" {
-		t.Fatalf("UKSM не остановлен: run=%q", got)
+		t.Fatalf("UKSM not stopped: run=%q", got)
 	}
 
-	if err := SetEnabled(KindUKSM, true); err != nil {
+	if err := SYSFS.Set(KindUKSM, true); err != nil {
 		t.Fatal(err)
 	}
 	status = Read()
 	if !status.UKSM.Enabled || status.KSM.Enabled {
-		t.Fatalf("включение UKSM должно выключить KSM: %+v", status)
+		t.Fatalf("enabling UKSM must disable KSM: %+v", status)
 	}
 	if got := read(t, dirKSM, "run"); got != "0" {
-		t.Fatalf("KSM не остановлен: run=%q", got)
+		t.Fatalf("KSM not stopped: run=%q", got)
 	}
 }
 
@@ -78,15 +78,15 @@ func TestBothDisabled(t *testing.T) {
 	write(t, dirKSM, "run", "1")
 	write(t, dirUKSM, "run", "1")
 
-	if err := SetEnabled(KindKSM, false); err != nil {
+	if err := SYSFS.Set(KindKSM, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetEnabled(KindUKSM, false); err != nil {
+	if err := SYSFS.Set(KindUKSM, false); err != nil {
 		t.Fatal(err)
 	}
 	status := Read()
 	if status.KSM.Enabled || status.UKSM.Enabled {
-		t.Fatalf("оба механизма должны быть выключены: %+v", status)
+		t.Fatalf("both mechanisms must be disabled: %+v", status)
 	}
 }
 
@@ -100,10 +100,10 @@ func TestStatusPerMechanism(t *testing.T) {
 
 	status := Read()
 	if status.KSM.Merged != 128 || status.UKSM.Merged != 16 {
-		t.Fatalf("показатели перепутаны: %+v", status)
+		t.Fatalf("metrics mixed up: %+v", status)
 	}
 	if !status.KSM.Available || !status.UKSM.Available {
-		t.Fatalf("оба механизма должны быть доступны: %+v", status)
+		t.Fatalf("both mechanisms must be available: %+v", status)
 	}
 }
 
@@ -114,22 +114,22 @@ func TestIndependentAvailability(t *testing.T) {
 
 	status := Read()
 	if !status.KSM.Supported || status.UKSM.Supported {
-		t.Fatalf("штамм uksm должен быть недоступен: %+v", status)
+		t.Fatalf("uksm strain must be unavailable: %+v", status)
 	}
-	if err := SetEnabled(KindKSM, true); err != nil {
+	if err := SYSFS.Set(KindKSM, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetEnabled(KindUKSM, true); err != ErrUnavailable {
-		t.Fatalf("включение отсутствующего UKSM: ожидалась ErrUnavailable, получено %v", err)
+	if err := SYSFS.Set(KindUKSM, true); err != ErrUnavailable {
+		t.Fatalf("enabling missing UKSM: expected ErrUnavailable, got %v", err)
 	}
 	if !Read().KSM.Enabled {
-		t.Fatal("KSM не должен выключиться из-за неудачного включения UKSM")
+		t.Fatal("KSM must not turn off due to failed UKSM enable")
 	}
 }
 
 func TestUnknownKind(t *testing.T) {
 	prepare(t)
-	if err := SetEnabled("other", true); err != ErrUnknownKind {
-		t.Fatalf("ожидалась ErrUnknownKind, получено %v", err)
+	if err := SYSFS.Set("other", true); err != ErrUnknownKind {
+		t.Fatalf("expected ErrUnknownKind, got %v", err)
 	}
 }

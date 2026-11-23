@@ -1,3 +1,4 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { labsApi, rolesApi, usersApi } from '../../api/endpoints';
@@ -11,8 +12,9 @@ import { PasswordInput } from '../../components/ui/PasswordInput';
 import { Switch } from '../../components/ui/Switch';
 import { Dropdown } from '../../components/ui/Dropdown';
 import { Spinner } from '../../components/ui/Spinner';
-import { FoldersDialog } from './FoldersDialog';
-import { currentLanguage, t, useLanguageStore } from '../../i18n';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
+import { USERNAME_MAX_LENGTH, filterUsername, isValidUsername } from '../../lib/username';
+import { PASSWORD_MAX_LENGTH, isValidPassword } from '../../lib/names';
 
 
 const primary = 'border-transparent bg-gradient-to-br from-accent to-accent-2 font-semibold text-on-accent shadow-[0_6px_18px_-6px_rgba(99,102,241,.55)] hover:brightness-110';
@@ -25,45 +27,45 @@ const permGrid = 'grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2';
 const permItem = 'flex items-start gap-2.5 rounded-md px-0.5 py-[5px] text-[13.5px] hover:text-text';
 const hint = 'mt-2.5 text-xs leading-relaxed text-muted';
 
-const LAB_PERM_TITLES: Record<string, { en: string; ru: string }> = {
-  'lab.view': { en: 'View laboratory and topology', ru: 'Просмотр лаборатории и топологии' },
-  'lab.edit_meta': { en: 'Edit name and description', ru: 'Изменение названия и описания' },
-  'lab.save_topology': { en: 'Save topology view', ru: 'Сохранение вида топологии' },
-  'lab.export': { en: 'Export and copy laboratory', ru: 'Экспорт и копирование лаборатории' },
-  'lab.delete': { en: 'Delete laboratory', ru: 'Удаление лаборатории' },
-  'lab.manage_access': { en: 'Manage access for other users', ru: 'Управление правами других пользователей' },
-  'lab.wipe': { en: 'Wipe laboratory', ru: 'Wipe лаборатории (сброс всех машин)' },
-  'machine.add': { en: 'Add machines', ru: 'Добавление машин' },
-  'machine.edit': { en: 'Edit machine parameters', ru: 'Изменение параметров машин' },
-  'machine.move': { en: 'Move machines on canvas', ru: 'Перемещение по рабочему полю' },
-  'machine.clone': { en: 'Clone machines', ru: 'Клонирование машин' },
-  'machine.delete': { en: 'Delete machines', ru: 'Удаление машин' },
-  'machine.start': { en: 'Start machines', ru: 'Запуск машин' },
-  'machine.stop': { en: 'Stop and pause machines', ru: 'Остановка и пауза' },
-  'machine.restart': { en: 'Restart machines', ru: 'Перезагрузка машин' },
-  'machine.wipe': { en: 'Wipe machine state', ru: 'Wipe (сброс состояния машины)' },
-  'machine.snapshot': { en: 'Snapshots', ru: 'Снимки состояния' },
-  'link.create': { en: 'Create cables', ru: 'Создание проводов' },
-  'link.delete': { en: 'Delete cables', ru: 'Удаление проводов' },
-  'iface.manage': { en: 'Manage machine network interfaces', ru: 'Сетевые интерфейсы машины (число NIC)' },
-  'net.manage': { en: 'Manage networks', ru: 'Сети: создание, настройка, удаление' },
-  'disk.attach': { en: 'Attach disks and images', ru: 'Подключение дисков и образов' },
-  'disk.detach': { en: 'Detach disks', ru: 'Отключение дисков' },
-  'console.serial': { en: 'Serial console', ru: 'Консоль Serial (терминал)' },
-  'console.vnc': { en: 'VNC console', ru: 'Консоль VNC (экран)' },
-  'console.clipboard': { en: 'Copy and paste in the console', ru: 'Копирование и вставка в консоли' },
+const LAB_PERM_TITLES: Record<string, string> = {
+  'lab.view': 'View laboratory and topology',
+  'lab.edit_meta': 'Edit name and description',
+  'lab.save_topology': 'Save topology view',
+  'lab.export': 'Export and copy laboratory',
+  'lab.delete': 'Delete laboratory',
+  'lab.manage_access': 'Manage access for other users',
+  'lab.wipe': 'Wipe laboratory',
+  'machine.add': 'Add machines',
+  'machine.edit': 'Edit machine parameters',
+  'machine.move': 'Move machines on canvas',
+  'machine.clone': 'Clone machines',
+  'machine.delete': 'Delete machines',
+  'machine.start': 'Start machines',
+  'machine.stop': 'Stop and pause machines',
+  'machine.restart': 'Restart machines',
+  'machine.wipe': 'Wipe machine state',
+  'machine.snapshot': 'Saving images',
+  'link.create': 'Create cables',
+  'link.delete': 'Delete cables',
+  'iface.manage': 'Manage machine network interfaces',
+  'net.manage': 'Manage networks',
+  'disk.attach': 'Attach disks and images',
+  'disk.detach': 'Detach disks',
+  'console.serial': 'Serial console',
+  'console.vnc': 'VNC console',
+  'console.clipboard': 'Copy and paste in the console',
 };
 const permTitle = (key: string): string => {
   const title = LAB_PERM_TITLES[key];
   if (!title) return key;
-  return currentLanguage() === 'ru' ? title.ru : title.en;
+  return translateMessage(title);
 };
 
 function PermissionDialog({ user, onClose }: { user: User; onClose: () => void }) {
-  const [labId, setLabId] = useState<number | null>(null);
+  const [labId, setLabId] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<LabPermissions | null>(null);
   const labs = useQuery({ queryKey: ['labs', 'perm-dialog'], queryFn: () => labsApi.list() });
-  const openLab = async (id: number) => {
+  const openLab = async (id: string) => {
     setLabId(id);
     setPermissions(null);
     try {
@@ -93,10 +95,10 @@ function PermissionDialog({ user, onClose }: { user: User; onClose: () => void }
         <div className={permUser}>
           <div className="my-2 flex flex-wrap items-center gap-2 [&>select]:min-w-[280px] [&>select]:max-w-full">
             <b>{t('Rights for laboratories')}</b>
-            <Dropdown className="w-full max-w-[420px]" value={labId ? String(labId) : ''} options={[
+            <Dropdown className="w-full max-w-[420px]" value={labId ?? ''} options={[
               { value: '', label: `— ${t('Search')} —` },
-              ...(labs.data ?? []).map((lab: Lab) => ({ value: String(lab.id), label: `${lab.name} · ${t('Owner')}: ${lab.owner}` })),
-            ]} onChange={(value) => { const id = Number(value); if (id) void openLab(id); }} />
+              ...(labs.data ?? []).map((lab: Lab) => ({ value: lab.name, label: `${lab.name} · ${t('Owner')}: ${lab.owner}` })),
+            ]} onChange={(value) => { if (value) void openLab(value); }} />
           </div>
           {!labId && <div className="text-muted">{t('Select a laboratory to configure machine permissions.')}</div>}
           {labId && !permissions && <Spinner />}
@@ -205,7 +207,6 @@ export function UsersPage() {
   const [accountRole, setAccountRole] = useState('user');
   const [createError, setCreateError] = useState('');
   const [permsUser, setPermsUser] = useState<User | null>(null);
-  const [foldersUser, setFoldersUser] = useState<User | null>(null);
   const [passwordUser, setPasswordUser] = useState<User | null>(null);
   const [roleUser, setRoleUser] = useState<User | null>(null);
   const roles = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list });
@@ -218,8 +219,12 @@ export function UsersPage() {
       setCreateError(t('Enter a name'));
       return;
     }
-    if (password.length < 8 || password.length > 128) {
-      setCreateError(t('New password must contain 8 to 128 characters'));
+    if (!isValidUsername(name)) {
+      setCreateError(t('Username: 1–64 characters, Latin letters, digits, _, - and single spaces between words'));
+      return;
+    }
+    if (!isValidPassword(password)) {
+      setCreateError(t('Password: 8–256 characters, Latin letters, digits and symbols, no spaces'));
       return;
     }
     if (password !== confirmPassword) {
@@ -246,10 +251,11 @@ export function UsersPage() {
         <div className={box}>
           <h3 className={boxTitle}>{t('New user')}</h3>
           <div className={`grid grid-cols-1 items-end gap-2.5 ${isAdmin ? 'min-[901px]:grid-cols-[1fr_1fr_1fr_180px_auto]' : 'min-[901px]:grid-cols-[1fr_1fr_1fr_auto]'}`}>
-            <input placeholder={t('Username')} autoComplete="off" value={username} onChange={(event) => { setUsername(event.target.value); if (createError) setCreateError(''); }} />
-            <PasswordInput placeholder={t('Password (≥ 8 characters)')} autoComplete="new-password" minLength={8} maxLength={128}
+            <input placeholder={t('Username')} autoComplete="off" maxLength={USERNAME_MAX_LENGTH} value={username}
+              onChange={(event) => { setUsername(filterUsername(event.target.value)); if (createError) setCreateError(''); }} />
+            <PasswordInput placeholder={t('Password (≥ 8 characters)')} autoComplete="new-password" minLength={8} maxLength={PASSWORD_MAX_LENGTH}
               value={password} onChange={(event) => { setPassword(event.target.value); if (createError) setCreateError(''); }} />
-            <PasswordInput placeholder={t('Confirm Password')} autoComplete="new-password" minLength={8} maxLength={128}
+            <PasswordInput placeholder={t('Confirm Password')} autoComplete="new-password" minLength={8} maxLength={PASSWORD_MAX_LENGTH}
               value={confirmPassword} onChange={(event) => { setConfirmPassword(event.target.value); if (createError) setCreateError(''); }} />
             {isAdmin && (roles.data ?? []).length > 0 && (
               // The role is selected from the "Roles" section list: the built-in administrator role and all
@@ -276,11 +282,10 @@ export function UsersPage() {
                 <tr key={user.id}>
                   <td>{user.username}{isSelf && <span className="text-muted"> {t('You')}</span>}</td>
                   <td>
-                    {/* A regular account is shown as "No role": there is no separate "User" role. */}
-                    <div>{user.role === 'admin' ? t('Administrator') : t('No role')}</div>
-                    {(user.roles ?? []).length > 0 && (
-                      <div className="text-muted">{t('Role')}: {(user.roles ?? []).map((item) => item.name).join(', ')}</div>
-                    )}
+                    {/* One value per account: administrator, the assigned role(s), or none. */}
+                    {user.role === 'admin' ? <div>{t('Administrator')}</div>
+                      : (user.roles ?? []).length > 0 ? <div>{(user.roles ?? []).map((item) => item.name).join(', ')}</div>
+                      : <div className="text-muted">{t('No role')}</div>}
                   </td>
                   <td className={user.disabled ? 'text-bad' : 'text-ok'}>{user.disabled ? t('Disabled') : t('Active')}</td>
                   <td className="text-muted">{fmtTime(user.created_at)}</td>
@@ -294,13 +299,12 @@ export function UsersPage() {
                       })}>{user.disabled ? t('Enable') : t('Disable')}</button>
                     )}
                     {isAdmin && <button type="button" disabled={user.role === 'admin'} onClick={() => setPermsUser(user)}>{t('Rights')}</button>}
-                    {isAdmin && <button type="button" onClick={() => setFoldersUser(user)}>{t('Folders')}</button>}
                     {canSettings && (
                       <button type="button" disabled={!isAdmin && user.role === 'admin'} onClick={() => setPasswordUser(user)}>{t('Password')}</button>
                     )}
                     {canManage && (
-                      <button type="button" className={danger} disabled={isSelf || (!isAdmin && user.role === 'admin')} onClick={() => {
-                        if (!confirm(`${t('Delete user with their laboratories?')} (${user.username})`)) return;
+                      <button type="button" className={danger} disabled={isSelf || (!isAdmin && user.role === 'admin')} onClick={async () => {
+                        if (!(await askConfirm({ title: `${t('Delete user with their laboratories?')} (${user.username})`, danger: true }))) return;
                         void guard(async () => { await usersApi.remove(user.id); reload(); });
                       }}>{t('Delete')}</button>
                     )}
@@ -313,7 +317,6 @@ export function UsersPage() {
       </div>
       {roleUser && <RoleDialog user={roleUser} onClose={() => { setRoleUser(null); reload(); }} />}
       {permsUser && <PermissionDialog user={permsUser} onClose={() => { setPermsUser(null); reload(); }} />}
-      {foldersUser && <FoldersDialog user={foldersUser} onClose={() => setFoldersUser(null)} onSaved={() => void queryClient.invalidateQueries({ queryKey: ['folders'] })} />}
       {passwordUser && (
         <PasswordDialog
           requireCurrent={false}

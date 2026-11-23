@@ -19,7 +19,7 @@ import (
 // For stopped machines CPU and RAM are always 0; disk is counted for stopped machines too (overlays are preserved).
 type machineStatus struct {
 	RID       int64   `json:"rid"`
-	DeviceID  int64   `json:"device_id"`
+	DeviceID  string  `json:"device_id"`
 	Name      string  `json:"name"`
 	Type      string  `json:"type"`
 	IconURL   string  `json:"icon_url"` // the machine's custom icon; empty - standard by type
@@ -55,25 +55,25 @@ func liveState(state string) bool {
 // The selection is limited to the instance (instance_devices.instance_id) and the lab (devices.lab_id):
 // machines of other users and other labs do not appear in the response.
 func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
-	labID, ok := h.lab(w, r, access.LabView)
+	labName, ok := h.lab(w, r, access.LabView)
 	if !ok {
 		return
 	}
-	iid, ok := h.instanceParam(w, r, labID)
+	iid, ok := h.instanceParam(w, r, labName)
 	if !ok {
 		return
 	}
 	rows, err := h.DB.Query(`SELECT r.id, r.device_id, COALESCE(r.console, '')
 		FROM instance_devices r WHERE r.instance_id = ?`, iid)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	// Machine details (name, icons) come from the lab topology; type comes from the template.
-	fl, _ := h.DB.Labs.Lab(labID)
-	devs := map[int64]labfile.Device{}
+	fl, _ := h.DB.Labs.Lab(labName)
+	devs := map[string]labfile.Device{}
 	for _, d := range fl.Devices {
-		devs[d.ID] = d
+		devs[d.Name] = d
 	}
 	types := map[int64]string{}
 	for _, tpl := range h.DB.Catalog.Templates() {
@@ -107,13 +107,13 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 		if console == "" {
 			m.Console = d.Console
 		}
-		m.IconURL = icons.URL(labID, d.Icon, d.CustomIcon)
+		m.IconURL = icons.URL(labName, d.Icon, d.CustomIcon)
 		list = append(list, m)
 	}
 	err = rows.Err()
 	rows.Close()
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	// The order is unchanged: by machine name, then by instance row.
@@ -151,7 +151,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 			m.PID = 0
 		}
 		if h.M != nil {
-			m.DiskBytes = h.M.Disk(labID, m.RID)
+			m.DiskBytes = h.M.Disk(m.RID)
 		}
 
 		if m.Running {
@@ -163,7 +163,7 @@ func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
 	}
 
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"lab_id":         labID,
+		"lab_id":         labName,
 		"instance":       iid,
 		"host_cpus":      runtime.NumCPU(),
 		"host_ram_bytes": qemu.MemTotal(),

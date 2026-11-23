@@ -83,22 +83,11 @@ export class ReconnectSocket {
     this.drop(false);
   }
 
-  restart(): void {
-    if (!this.running) return;
-    this.attempts = 0;
-    this.drop(false);
-    this.connect();
-  }
-
-  connected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
-  }
-
   send(data: string | ArrayBufferLike | Blob | ArrayBufferView): boolean {
     const ws = this.ws;
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
     try {
-      ws.send(data);
+      ws.send(data as string | Blob | BufferSource);
       return true;
     } catch {
       return false;

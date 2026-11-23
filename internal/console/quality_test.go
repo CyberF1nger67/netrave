@@ -120,7 +120,7 @@ func decodeQuality(t *testing.T, rec *httptest.ResponseRecorder) qualityResponse
 	t.Helper()
 	var response qualityResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("ответ не JSON: %v (%s)", err, rec.Body)
+		t.Fatalf("response is not JSON: %v (%s)", err, rec.Body)
 	}
 	return response
 }
@@ -138,10 +138,10 @@ func TestQualityDefaultsWithoutTemplate(t *testing.T) {
 	}
 	response := decodeQuality(t, rec)
 	if response.Settings.Resolution != "auto" || response.Settings.Encoding != "auto" {
-		t.Fatalf("умолчания: %+v", response.Settings)
+		t.Fatalf("defaults: %+v", response.Settings)
 	}
 	if response.Settings.Bitrate != nil || response.Settings.Quality != nil || response.Settings.Compression != nil || response.Settings.FPS != nil {
-		t.Fatalf("числовые поля должны быть null: %+v", response.Settings)
+		t.Fatalf("numeric fields must be null: %+v", response.Settings)
 	}
 }
 
@@ -153,10 +153,10 @@ func TestQualityTakenFromTemplate(t *testing.T) {
 
 	response := decodeQuality(t, e.call(owner, http.MethodGet, qualityPath(rid), nil))
 	if response.Settings.Resolution != "1280x720" || response.Settings.Bitrate == nil || *response.Settings.Bitrate != 25 {
-		t.Fatalf("настройки должны прийти из шаблона: %+v", response.Settings)
+		t.Fatalf("settings must come from the template: %+v", response.Settings)
 	}
 	if response.Defaults.Resolution != "1280x720" {
-		t.Fatalf("defaults должны совпадать с шаблоном: %+v", response.Defaults)
+		t.Fatalf("defaults must match the template: %+v", response.Defaults)
 	}
 }
 
@@ -173,7 +173,7 @@ func TestQualityPutOverridesTemplateInMemory(t *testing.T) {
 	}
 	response := decodeQuality(t, e.call(owner, http.MethodGet, qualityPath(rid), nil))
 	if response.Settings.Resolution != "1024x768" || response.Settings.FPS == nil || *response.Settings.FPS != 30 {
-		t.Fatalf("после PUT должны действовать новые настройки: %+v", response.Settings)
+		t.Fatalf("after PUT the new settings must apply: %+v", response.Settings)
 	}
 }
 
@@ -190,7 +190,7 @@ func TestQualityValidation(t *testing.T) {
 	}
 	for _, body := range bad {
 		if rec := e.call(owner, http.MethodPut, qualityPath(rid), body); rec.Code != http.StatusBadRequest {
-			t.Fatalf("%v должен отклоняться: %d %s", body, rec.Code, rec.Body)
+			t.Fatalf("%v must be rejected: %d %s", body, rec.Code, rec.Body)
 		}
 	}
 }
@@ -202,10 +202,10 @@ func TestQualityRequiresDeviceAccess(t *testing.T) {
 	rid := e.machine(t, owner.id, 0)
 
 	if rec := e.call(stranger, http.MethodGet, qualityPath(rid), nil); rec.Code != http.StatusNotFound {
-		t.Fatalf("чужая машина: %d %s", rec.Code, rec.Body)
+		t.Fatalf("foreign machine: %d %s", rec.Code, rec.Body)
 	}
 	if rec := e.call(stranger, http.MethodPut, qualityPath(rid), map[string]any{"fps": 10}); rec.Code != http.StatusNotFound {
-		t.Fatalf("чужая машина PUT: %d %s", rec.Code, rec.Body)
+		t.Fatalf("foreign machine PUT: %d %s", rec.Code, rec.Body)
 	}
 }
 
@@ -213,6 +213,6 @@ func TestQualityDefaultsOnInvalidID(t *testing.T) {
 	e := newQualityEnv(t)
 	owner := e.user(t, "alice", "user")
 	if rec := e.call(owner, http.MethodGet, "/api/consoles/abc/quality", nil); rec.Code != http.StatusNotFound && rec.Code != http.StatusBadRequest {
-		t.Fatalf("некорректный id: %d %s", rec.Code, rec.Body)
+		t.Fatalf("invalid id: %d %s", rec.Code, rec.Body)
 	}
 }

@@ -1,8 +1,9 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { labPath, paths } from '../../routing/paths';
-import { findFolder, folderNameOf } from '../../routing/labLookup';
+import { findFolder } from '../../routing/labLookup';
 import { foldersApi, labsApi } from '../../api/endpoints';
 import type { Lab, LabFolder } from '../../types/api';
 import { canCreateLabs, canManageFolders, canMoveLabs, useAuthStore } from '../../stores/auth';
@@ -42,7 +43,7 @@ function Instances({ lab, folderName }: { lab: Lab; folderName: string | null })
   );
 }
 
-function Preview({ labId }: { labId: number }) {
+function Preview({ labId }: { labId: string }) {
   const query = useQuery({ queryKey: ['lab-preview', labId], queryFn: () => labsApi.topology(labId), staleTime: 30_000 });
   return query.data ? <TopologyPreview topology={query.data} /> : <span className="text-muted">{t('Loading…')}</span>;
 }
@@ -51,7 +52,7 @@ type DialogState =
   | { kind: 'lab'; lab: Lab | null }
   | { kind: 'access'; lab: Lab }
   | { kind: 'wipe'; lab: Lab }
-  | { kind: 'folder-new'; parent: number }
+  | { kind: 'folder-new'; parent: string }
   | { kind: 'folder-rename'; folder: LabFolder }
   | { kind: 'folder-move'; folder: LabFolder }
   | { kind: 'lab-move'; lab: Lab };
@@ -80,12 +81,12 @@ export function LabsPage() {
   const allLabs = labs.data ?? [];
   // A folder's URL is its name.
   const folder = requestedFolder ? findFolder(folderList, requestedFolder) : undefined;
-  const current = folder?.id ?? 0;
+  const current = folder?.path ?? '';
 
   const shown = useMemo(() => {
     const text = search.trim().toLowerCase();
     if (text) return allLabs.filter((lab) => `${lab.name} ${lab.description}`.toLowerCase().includes(text));
-    return allLabs.filter((lab) => (lab.folder_id || 0) === current);
+    return allLabs.filter((lab) => (lab.folder || '') === current);
   }, [allLabs, current, search]);
 
   const subs = useMemo(() => {
@@ -94,25 +95,25 @@ export function LabsPage() {
       return folderList.filter((folder) => folder.name.toLowerCase().includes(text))
         .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     }
-    return folderList.filter((folder) => (folder.parent_id ?? 0) === current).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    return folderList.filter((folder) => folder.parent === current).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
   }, [folderList, current, search]);
 
   const createFolder = async (name: string) => {
-    if (dialog?.kind === 'folder-new') { await foldersApi.create(name, dialog.parent || null); reload(); }
+    if (dialog?.kind === 'folder-new') { await foldersApi.create(name, dialog.parent); reload(); }
   };
   const renameFolder = async (name: string) => {
-    if (dialog?.kind === 'folder-rename') { await foldersApi.update(dialog.folder.id, { name }); reload(); }
+    if (dialog?.kind === 'folder-rename') { await foldersApi.update(dialog.folder.path, { name }); reload(); }
   };
-  const moveFolder = async (folderId: number | null) => {
-    if (dialog?.kind === 'folder-move') { await foldersApi.update(dialog.folder.id, { parent_id: folderId }); reload(); }
+  const moveFolder = async (folderPath: string | null) => {
+    if (dialog?.kind === 'folder-move') { await foldersApi.update(dialog.folder.path, { parent: folderPath }); reload(); }
   };
-  const moveLab = async (folderId: number | null) => {
-    if (dialog?.kind === 'lab-move') { await foldersApi.placeLab(dialog.lab.id, folderId); reload(); }
+  const moveLab = async (folderPath: string | null) => {
+    if (dialog?.kind === 'lab-move') { await foldersApi.placeLab(dialog.lab.name, folderPath); reload(); }
   };
-  const dropLab = (labId: number, folderId: number) => {
+  const dropLab = (labName: string, folderPath: string) => {
     if (!moveLabs) return;
     void guard(async () => {
-      await foldersApi.placeLab(labId, folderId || null);
+      await foldersApi.placeLab(labName, folderPath || null);
       toast.success(t('Laboratory copied'));
       reload();
     });
@@ -150,12 +151,12 @@ export function LabsPage() {
         {searching ? <span className="text-muted">{t('Search')}</span> : (
           <>
             <Link className={crumb} to={paths.labs} onDragOver={(event) => { if (moveLabs && event.dataTransfer.types.includes(DRAG)) event.preventDefault(); }}
-              onDrop={(event) => { const id = Number(event.dataTransfer.getData(DRAG)); if (id) dropLab(id, 0); }} title={t('Root')}>root</Link>
+              onDrop={(event) => { const name = event.dataTransfer.getData(DRAG); if (name) dropLab(name, ''); }} title={t('Root')}>root</Link>
             {path.flatMap((item) => [
-              <span className="text-line-2" key={`sep-${item.id}`}>/</span>,
-              <Link className={crumb} key={item.id} to={paths.folder(item.name)}
+              <span className="text-line-2" key={`sep-${item.path}`}>/</span>,
+              <Link className={crumb} key={item.path} to={paths.folder(item.name)}
                 onDragOver={(event) => { if (moveLabs && event.dataTransfer.types.includes(DRAG)) event.preventDefault(); }}
-                onDrop={(event) => { const id = Number(event.dataTransfer.getData(DRAG)); if (id) dropLab(id, item.id); }}>
+                onDrop={(event) => { const name = event.dataTransfer.getData(DRAG); if (name) dropLab(name, item.path); }}>
                 {item.name}
               </Link>,
             ])}
@@ -167,25 +168,25 @@ export function LabsPage() {
           <div className="mb-2.5 mt-1 text-xs font-semibold uppercase tracking-[.06em] text-muted">{t('Folders')}</div>
           <div className="mb-[22px] grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3 max-sm:grid-cols-1">
             {subs.map((folder) => {
-              const subCount = folderList.filter((item) => item.parent_id === folder.id).length;
-              const labCount = folder.lab_count ?? allLabs.filter((lab) => lab.folder_id === folder.id).length;
+              const subCount = folderList.filter((item) => item.parent === folder.path).length;
+              const labCount = folder.lab_count ?? allLabs.filter((lab) => lab.folder === folder.path).length;
               return (
-                <div key={folder.id} data-folder-card className="group flex min-w-0 cursor-pointer items-center gap-3 rounded-app border border-line bg-panel py-3 pl-3 pr-2.5 shadow-app transition-[transform,border-color] hover:-translate-y-0.5 hover:border-line-2 data-[drop=true]:border-accent data-[drop=true]:bg-accent-soft" role="link" tabIndex={0} title={t('Open')}
+                <div key={folder.path} data-folder-card className="group flex min-w-0 cursor-pointer items-center gap-3 rounded-app border border-line bg-panel py-3 pl-3 pr-2.5 shadow-app transition-[transform,border-color] hover:-translate-y-0.5 hover:border-line-2 data-[drop=true]:border-accent data-[drop=true]:bg-accent-soft" role="link" tabIndex={0} title={t('Open')}
                   onClick={() => { if (searching) setSearch(''); navigate(paths.folder(folder.name)); }}
                   onKeyDown={(event) => { if (event.key === 'Enter') { if (searching) setSearch(''); navigate(paths.folder(folder.name)); } }}
                   onDragOver={(event) => { if (moveLabs && event.dataTransfer.types.includes(DRAG)) { event.preventDefault(); event.currentTarget.dataset['drop'] = 'true'; } }}
                   onDragLeave={(event) => { delete event.currentTarget.dataset['drop']; }}
-                  onDrop={(event) => { event.preventDefault(); delete event.currentTarget.dataset['drop']; const id = Number(event.dataTransfer.getData(DRAG)); if (id) dropLab(id, folder.id); }}>
+                  onDrop={(event) => { event.preventDefault(); delete event.currentTarget.dataset['drop']; const name = event.dataTransfer.getData(DRAG); if (name) dropLab(name, folder.path); }}>
                   <span className="grid size-11 flex-none place-items-center rounded-xl bg-gradient-to-br from-accent/22 to-accent-2/12 text-accent"><Icon name="folder" size={22} /></span>
                   <div className="flex min-w-0 flex-1 flex-col"><b className="truncate font-semibold">{folder.name}</b><small className="text-xs text-muted">{subCount} {t('Subfolders')} · {labCount} {t('labs')}</small></div>
                   {manageFolders && (
                     <div className="flex flex-none gap-0 opacity-60 group-hover:opacity-100 group-focus-within:opacity-100">
                       <button type="button" className={iconBtn} title={t('Rename folder')} onClick={(event) => { event.stopPropagation(); setDialog({ kind: 'folder-rename', folder }); }}><Icon name="edit" size={16} /></button>
                       <button type="button" className={iconBtn} title={t('Move folder')} onClick={(event) => { event.stopPropagation(); setDialog({ kind: 'folder-move', folder }); }}><Icon name="open" size={16} /></button>
-                      <button type="button" className={`${iconBtn} hover:text-bad`} title={t('Delete')} onClick={(event) => {
+                      <button type="button" className={`${iconBtn} hover:text-bad`} title={t('Delete')} onClick={async (event) => {
                         event.stopPropagation();
-                        if (!confirm(`${t('Delete folder?')} (${folder.name}). ${t('Laboratories will be moved to “No folder”.')}`)) return;
-                        void guard(async () => { await foldersApi.remove(folder.id); reload(); });
+                        if (!(await askConfirm({ title: `${t('Delete folder?')} (${folder.name}). ${t('Laboratories will be moved to “No folder”.')}`, danger: true }))) return;
+                        void guard(async () => { await foldersApi.remove(folder.path); reload(); });
                       }}><Icon name="trash" size={16} /></button>
                     </div>
                   )}
@@ -200,35 +201,35 @@ export function LabsPage() {
           <div className="mb-2.5 mt-1 text-xs font-semibold uppercase tracking-[.06em] text-muted">{searching ? t('Laboratories') : current ? t('Laboratories in this folder') : t('Laboratories without a folder')}</div>
           <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-4 max-sm:grid-cols-1">
             {shown.map((lab) => (
-              <div key={lab.id} data-lab-card className="group flex flex-col overflow-hidden rounded-app border border-line bg-panel shadow-app transition-[transform,box-shadow,border-color] duration-300 hover:-translate-y-[3px] hover:border-line-2 hover:shadow-[0_20px_44px_-20px_rgba(0,0,0,.55)] [&[draggable=true]]:cursor-grab" draggable={moveLabs}
-                onDragStart={(event) => { event.dataTransfer.setData(DRAG, String(lab.id)); event.dataTransfer.effectAllowed = 'move'; }}
+              <div key={lab.name} data-lab-card className="group flex flex-col overflow-hidden rounded-app border border-line bg-panel shadow-app transition-[transform,box-shadow,border-color] duration-300 hover:-translate-y-[3px] hover:border-line-2 hover:shadow-[0_20px_44px_-20px_rgba(0,0,0,.55)] [&[draggable=true]]:cursor-grab" draggable={moveLabs}
+                onDragStart={(event) => { event.dataTransfer.setData(DRAG, lab.name); event.dataTransfer.effectAllowed = 'move'; }}
                 title={moveLabs ? t('Drag to a folder to move') : undefined}>
-                <Link className="flex h-[168px] items-center justify-center border-b border-line bg-bg-2 bg-[radial-gradient(circle_at_50%_35%,var(--accent-soft),transparent_70%)] no-underline" to={labPath(lab, folderNameOf(folderList, lab.folder_id))} title={t('Open')}><Preview labId={lab.id} /></Link>
+                <Link className="flex h-[168px] items-center justify-center border-b border-line bg-bg-2 bg-[radial-gradient(circle_at_50%_35%,var(--accent-soft),transparent_70%)] no-underline" to={labPath(lab)} title={t('Open')}><Preview labId={lab.id} /></Link>
                 <div className="px-[18px] pb-3.5 pt-4">
-                  <div className="text-[15.5px] font-[650] tracking-[-.005em] [&>a]:text-text [&>a]:no-underline [&>a:hover]:text-accent"><Link to={labPath(lab, folderNameOf(folderList, lab.folder_id))}>{lab.name}</Link></div>
+                  <div className="text-[15.5px] font-[650] tracking-[-.005em] [&>a]:text-text [&>a]:no-underline [&>a:hover]:text-accent"><Link to={labPath(lab)}>{lab.name}</Link></div>
                   <div className="my-1 truncate text-muted">{lab.description || '—'}</div>
                   <div className="text-muted">{lab.devices} {t('Device')} · {lab.networks} {t('Network')} · {fmtTime(lab.updated_at)} · {t('Owner')}: {lab.owner}</div>
-                  {searching && <div className="text-muted">{t('Folder')}: {folderList.find((item) => item.id === lab.folder_id)?.name ?? t('Root (no folder)')}</div>}
-                  <Instances lab={lab} folderName={folderNameOf(folderList, lab.folder_id)} />
+                  {searching && <div className="text-muted">{t('Folder')}: {folderList.find((item) => item.path === lab.folder)?.name ?? t('Root (no folder)')}</div>}
+                  <Instances lab={lab} folderName={null} />
                   <div className={`mt-3 ${acts} py-2`}>
-                    <button type="button" className={primary} onClick={() => navigate(labPath(lab, folderNameOf(folderList, lab.folder_id)))}>{t('Open')}</button>
+                    <button type="button" className={primary} onClick={() => navigate(labPath(lab))}>{t('Open')}</button>
                     {lab.perms['lab.edit_meta'] && <button type="button" onClick={() => setDialog({ kind: 'lab', lab })}>{t('Parameters')}</button>}
                     {moveLabs && <button type="button" onClick={() => setDialog({ kind: 'lab-move', lab })}>{t('Move to folder…')}</button>}
                     {lab.perms['lab.manage_access'] && <button type="button" onClick={() => setDialog({ kind: 'access', lab })}>{t('Access permissions')}</button>}
                     {lab.perms['lab.export'] && lab.owner_id !== user?.id && (
                       <button type="button" className={primary} title={t('Separate copy only for you')} onClick={() => void guard(async () => {
-                        const copy = await labsApi.copy(lab.id);
+                        const copy = await labsApi.copy(lab.name);
                         toast.success(t('Your copy of the laboratory has been created'));
-                        navigate(labPath(copy, folderNameOf(folderList, copy.folder_id)));
+                        navigate(labPath(copy));
                       })}>{t('Open my copy')}</button>
                     )}
                     {lab.perms['lab.export'] && lab.owner_id === user?.id && (
                       <button type="button" onClick={() => void guard(async () => {
-                        await labsApi.copy(lab.id); toast.success(t('Laboratory copied')); reload();
+                        await labsApi.copy(lab.name); toast.success(t('Laboratory copied')); reload();
                       })}>{t('Copy')}</button>
                     )}
                     {lab.perms['lab.export'] && <button type="button" onClick={() => void guard(async () => {
-                      const blob = await labsApi.exportLab(lab.id);
+                      const blob = await labsApi.exportLab(lab.name);
                       const anchor = document.createElement('a');
                       anchor.href = URL.createObjectURL(blob);
                       anchor.download = `${lab.name}.yaml`;
@@ -236,10 +237,10 @@ export function LabsPage() {
                       URL.revokeObjectURL(anchor.href);
                     })}>{t('Export')}</button>}
                     {lab.perms['lab.wipe'] && <button type="button" className={danger} onClick={() => setDialog({ kind: 'wipe', lab })}>{t('Wipe Lab')}</button>}
-                    {lab.perms['lab.delete'] && <button type="button" className={danger} onClick={() => {
-                      if (!confirm(`${t('Delete laboratory?')} (${lab.name})`)) return;
-                      closeConsolesForLab(lab.id);
-                      void guard(async () => { await labsApi.remove(lab.id); reload(); });
+                    {lab.perms['lab.delete'] && <button type="button" className={danger} onClick={async () => {
+                      if (!(await askConfirm({ title: `${t('Delete laboratory?')} (${lab.name})`, danger: true }))) return;
+                      closeConsolesForLab(lab.name);
+                      void guard(async () => { await labsApi.remove(lab.name); reload(); });
                     }}>{t('Delete')}</button>}
                   </div>
                 </div>
@@ -257,9 +258,9 @@ export function LabsPage() {
       {dialog?.kind === 'folder-new' && <FolderNameDialog title={t('New folder')} onClose={() => setDialog(null)} onSave={createFolder} />}
       {dialog?.kind === 'folder-rename' && <FolderNameDialog title={t('Rename folder')} initial={dialog.folder.name} onClose={() => setDialog(null)} onSave={renameFolder} />}
       {dialog?.kind === 'folder-move' && <FolderSelectDialog title={`${t('Move folder')} (${dialog.folder.name})`} folders={folderList}
-        value={dialog.folder.parent_id} exclude={subtreeIds(folderList, dialog.folder.id)} onClose={() => setDialog(null)} onSave={moveFolder} />}
+        value={dialog.folder.parent || null} exclude={subtreeIds(folderList, dialog.folder.path)} onClose={() => setDialog(null)} onSave={moveFolder} />}
       {dialog?.kind === 'lab-move' && <FolderSelectDialog title={t('Move laboratory')} folders={folderList} confirmLabel={t('Move laboratory')}
-        value={dialog.lab.folder_id || null} onClose={() => setDialog(null)} onSave={moveLab} />}
+        value={dialog.lab.folder || null} onClose={() => setDialog(null)} onSave={moveLab} />}
     </>
   );
 }

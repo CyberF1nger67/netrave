@@ -1,11 +1,12 @@
-import { t } from '../i18n';
+import { t, translateMessage } from '../i18n';
 
 export class ApiError extends Error {
   readonly status: number;
   readonly data: unknown;
 
-  constructor(message: string, status: number, data: unknown) {
-    super(message);
+  constructor(message: string, status: number, data: unknown, params?: Record<string, string>) {
+    // Server messages are English keys: the interface shows them in the current language.
+    super(translateMessage(message, params));
     this.name = 'ApiError';
     this.status = status;
     this.data = data;
@@ -23,6 +24,13 @@ export function setCsrfToken(token: string): void {
 
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
   onUnauthorized = handler;
+}
+
+// Parameters of a keyed server error, e.g. {"error": "Unknown setting: {name}", "params": {"name": "x"}}.
+function paramsOf(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || !('params' in value)) return undefined;
+  const params = (value as { params: unknown }).params;
+  return params && typeof params === 'object' ? (params as Record<string, string>) : undefined;
 }
 
 function isErrorPayload(value: unknown): value is { error: string } {
@@ -72,7 +80,7 @@ export async function request<T>(
       const message = isErrorPayload(data)
         ? data.error
         : (typeof data === 'string' && data ? data : response.statusText);
-      throw new ApiError(message || `HTTP ${response.status}`, response.status, data);
+      throw new ApiError(message || `HTTP ${response.status}`, response.status, data, paramsOf(data));
     }
     return data as T;
   } finally {
@@ -122,7 +130,7 @@ export function uploadFile<T>(
       }
       if (xhr.status === 401 && onUnauthorized) onUnauthorized();
       const message = isErrorPayload(data) ? data.error : `${t('Download failed')} (${xhr.status})`;
-      reject(new ApiError(message, xhr.status, data));
+      reject(new ApiError(message, xhr.status, data, paramsOf(data)));
     };
     xhr.onerror = () => reject(new ApiError(t('Network error while uploading'), 0, null));
     xhr.send(file);
@@ -151,7 +159,7 @@ export async function uploadImage(path: string, file: Blob): Promise<unknown> {
   }
   if (!response.ok) {
     if (response.status === 401 && onUnauthorized) onUnauthorized();
-    throw new ApiError(isErrorPayload(data) ? data.error : response.statusText, response.status, data);
+    throw new ApiError(isErrorPayload(data) ? data.error : response.statusText, response.status, data, paramsOf(data));
   }
   return data;
 }

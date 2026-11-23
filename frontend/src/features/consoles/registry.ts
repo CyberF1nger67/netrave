@@ -1,7 +1,7 @@
 export interface ConsoleEntry {
   id: number;
   name: string;
-  lab: number;
+  lab: string;
   owner: string | null;
   kind: 'serial' | 'vnc';
 }
@@ -13,10 +13,14 @@ export function readConsoles(): ConsoleEntry[] {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? '[]') as unknown;
     if (!Array.isArray(raw)) return [];
-    return raw.filter((item): item is ConsoleEntry => {
+    return raw.map((item) => {
+      const value = item as Record<string, unknown>;
+      return { ...value, lab: typeof value['lab'] === 'string' ? value['lab'] : '' };
+    }).filter((item): item is ConsoleEntry => {
       if (typeof item !== 'object' || item === null) return false;
       const value = item as Record<string, unknown>;
       return typeof value['id'] === 'number' && typeof value['name'] === 'string'
+        && (typeof value['lab'] === 'string' || typeof value['lab'] === 'number')
         && (value['kind'] === 'serial' || value['kind'] === 'vnc');
     });
   } catch {
@@ -32,7 +36,7 @@ export function writeConsoles(list: ConsoleEntry[]): void {
   }
 }
 
-export function closeConsolesForLab(labId: number): void {
+export function closeConsolesForLab(labId: string): void {
   writeConsoles(readConsoles().filter((entry) => entry.lab !== labId));
 }
 

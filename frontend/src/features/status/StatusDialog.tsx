@@ -11,7 +11,7 @@ const pillTone = "data-[st=running]:bg-ok/14 data-[st=running]:text-ok data-[st=
 
 const LABELS: Record<string, string> = { running: t('Running'), paused: t('Paused'), starting: t('Starting'), stopping: t('Stopping'), stopped: t('Stopped'), error: t('Error') };
 
-export function StatusDialog({ labId, labName, instance, onClose }: { labId: number; labName: string; instance?: number | undefined; onClose: () => void }) {
+export function StatusDialog({ labId, labName, instance, onClose }: { labId: string; labName: string; instance?: number | undefined; onClose: () => void }) {
   const [status, setStatus] = useState<LabStatus | null>(null);
   const [error, setError] = useState('');
   useEffect(() => {

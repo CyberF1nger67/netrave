@@ -11,12 +11,12 @@ import (
 // devRunning reports that the device is running or transitioning to the running state.
 // Process state is stored only in the QEMU manager's memory; the database keeps only
 // the historical first-start flag (started_at).
-func devRunning(db *database.DB, m *qemu.Manager, id int64) bool {
+func devRunning(db *database.DB, m *qemu.Manager, labName, devName string) bool {
 	// A wire cannot be changed while the topology machine is running in at least one instance.
 	if m == nil {
 		return false
 	}
-	rows, err := db.Query(`SELECT id FROM instance_devices WHERE device_id=?`, id)
+	rows, err := db.Query(`SELECT id FROM instance_devices WHERE device_id=?`, devName)
 	if err != nil {
 		return false
 	}
@@ -31,12 +31,11 @@ func devRunning(db *database.DB, m *qemu.Manager, id int64) bool {
 }
 
 // anyDeviceRunning reports whether at least one machine from the topology device list is running.
-func anyDeviceRunning(db *database.DB, m *qemu.Manager, ids []int64) bool {
-	if m == nil || len(ids) == 0 {
+func anyDeviceRunning(db *database.DB, m *qemu.Manager, labName string, names []string) bool {
+	if m == nil || len(names) == 0 {
 		return false
 	}
-	args := idArgs(0, ids)[1:]
-	rows, err := db.Query(`SELECT id FROM instance_devices WHERE device_id IN (`+placeholders(len(ids))+`)`, args...)
+	rows, err := db.Query(`SELECT id FROM instance_devices WHERE device_id IN (`+placeholders(len(names))+`)`, nameArgs(names)...)
 	if err != nil {
 		return false
 	}
@@ -52,32 +51,28 @@ func anyDeviceRunning(db *database.DB, m *qemu.Manager, ids []int64) bool {
 
 type endpoint struct {
 	aType, bType string
-	aID, bID     int64
+	aName, bName string
 }
 
-// connsOfObject returns wires that have an end of type kind with number id (in the object's lab).
-func connsOfObject(db *database.DB, kind string, id int64) []endpoint {
-	labID, ok := labOwnerOf(db, kind, id)
-	if !ok {
-		return nil
-	}
-	fl, ok := labData(db, labID)
+// connsOfObject returns cables that have an end of type kind with the name (in the lab).
+func connsOfObject(db *database.DB, kind, labName, name string) []endpoint {
+	fl, ok := labData(db, labName)
 	if !ok {
 		return nil
 	}
 	var out []endpoint
 	for _, c := range fl.Connections {
-		if (c.A.Type == kind && c.A.ID == id) || (c.B.Type == kind && c.B.ID == id) {
-			out = append(out, endpoint{aType: c.A.Type, aID: c.A.ID, bType: c.B.Type, bID: c.B.ID})
+		if (c.A.Type == kind && c.A.Name == name) || (c.B.Type == kind && c.B.Name == name) {
+			out = append(out, endpoint{aType: c.A.Type, aName: c.A.Name, bType: c.B.Type, bName: c.B.Name})
 		}
 	}
 	return out
 }
 
 // netRunning reports that a running device is connected to the network.
-func netRunning(db *database.DB, m *qemu.Manager, netID int64) bool {
-	for _, e := range connsOfObject(db, labfile.KindNetwork, netID) {
-		if (e.aType == "device" && devRunning(db, m, e.aID)) || (e.bType == "device" && devRunning(db, m, e.bID)) {
+func netRunning(db *database.DB, m *qemu.Manager, labName, netName string) bool {
+	for _, e := range connsOfObject(db, labfile.KindNetwork, labName, netName) {
+		if (e.aType == "device" && devRunning(db, m, labName, e.aName)) || (e.bType == "device" && devRunning(db, m, labName, e.bName)) {
 			return true
 		}
 	}
@@ -85,12 +80,12 @@ func netRunning(db *database.DB, m *qemu.Manager, netID int64) bool {
 }
 
 // devHasRunningPeer reports that the device is wired to another running device.
-func devHasRunningPeer(db *database.DB, m *qemu.Manager, devID int64) bool {
-	for _, e := range connsOfObject(db, labfile.KindDevice, devID) {
-		if e.aType == "device" && e.aID != devID && devRunning(db, m, e.aID) {
+func devHasRunningPeer(db *database.DB, m *qemu.Manager, labName, devName string) bool {
+	for _, e := range connsOfObject(db, labfile.KindDevice, labName, devName) {
+		if e.aType == "device" && e.aName != devName && devRunning(db, m, labName, e.aName) {
 			return true
 		}
-		if e.bType == "device" && e.bID != devID && devRunning(db, m, e.bID) {
+		if e.bType == "device" && e.bName != devName && devRunning(db, m, labName, e.bName) {
 			return true
 		}
 	}

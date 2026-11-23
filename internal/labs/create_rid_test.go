@@ -18,27 +18,27 @@ func TestCreatedDeviceCanBeSavedByRID(t *testing.T) {
 
 	tplID := e.template(t)
 
-	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+itoa(lab)+"/devices",
+	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+labPath(lab)+"/devices",
 		map[string]any{"template_id": tplID, "x": 100, "y": 100})
-	expect(t, rec, http.StatusCreated, "создание машины")
+	expect(t, rec, http.StatusCreated, "machine creation")
 	var created Device
 	decodeJSON(t, rec.Body.Bytes(), &created)
 	if created.RID == 0 {
-		t.Fatalf("ответ создания без rid: при сохранении настроек будет 404 «устройство не найдено»")
+		t.Fatalf("creation response without rid: saving settings will get 404 'device not found'")
 	}
 
 	var rows int
-	e.db.QueryRow(`SELECT COUNT(*) FROM instance_devices WHERE id=? AND device_id=?`, created.RID, created.ID).Scan(&rows)
+	e.db.QueryRow(`SELECT COUNT(*) FROM instance_devices WHERE id=? AND device_id=?`, created.RID, created.Name).Scan(&rows)
 	if rows != 1 {
-		t.Fatalf("rid %d не соответствует строке экземпляра машины %d", created.RID, created.ID)
+		t.Fatalf("rid %d does not match the instance row of machine %q", created.RID, created.Name)
 	}
 
-	expect(t, e.do(t, owner, http.MethodPut, "/api/devices/"+itoa(created.RID),
-		map[string]any{"name": "router-1", "cpu": 2}), http.StatusOK, "сохранение настроек созданной машины")
+	expect(t, e.do(t, owner, http.MethodPut, "/api/labs/"+labPath(lab)+"/devices/"+labPath(created.Name),
+		map[string]any{"name": "router-1", "cpu": 2}), http.StatusOK, "saving settings of the created machine")
 
-	name := devOf(t, e.db, created.ID).Name
+	name := devOf(t, e.db, lab, "router-1").Name
 	if name != "router-1" {
-		t.Fatalf("имя не сохранилось: %q", name)
+		t.Fatalf("name was not saved: %q", name)
 	}
 }
 
@@ -50,21 +50,21 @@ func TestPastedDeviceHasRID(t *testing.T) {
 	dev := e.device(t, lab)
 	e.runInstance(t, lab, dev, owner.id, "stopped", 0, 0)
 
-	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+itoa(lab)+"/paste",
-		map[string]any{"devices": []int64{dev}, "networks": []int64{}, "dx": 40, "dy": 40})
-	expect(t, rec, http.StatusCreated, "вставка машины")
+	rec := e.do(t, owner, http.MethodPost, "/api/labs/"+labPath(lab)+"/paste",
+		map[string]any{"devices": []string{dev}, "networks": []string{}, "dx": 40, "dy": 40})
+	expect(t, rec, http.StatusCreated, "machine paste")
 	var out struct {
 		Devices []Device `json:"devices"`
 	}
 	decodeJSON(t, rec.Body.Bytes(), &out)
 	if len(out.Devices) != 1 {
-		t.Fatalf("ожидалась одна копия машины, получено %d", len(out.Devices))
+		t.Fatalf("want one copy of the machine, got %d", len(out.Devices))
 	}
 	c := out.Devices[0]
-	if c.ID == dev {
-		t.Fatalf("в ответе вставки должна быть копия, а не исходная машина")
+	if c.Name == dev {
+		t.Fatalf("paste response must contain a copy, not the original machine")
 	}
 	if c.RID == 0 {
-		t.Errorf("копия машины %d из вставки без rid: настройки не сохранятся", c.ID)
+		t.Errorf("pasted copy of machine %s has no rid: settings will not be saved", c.Name)
 	}
 }

@@ -83,9 +83,9 @@ func catalogOf(t *Template) catalog.Template {
 func templateWriteErr(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, catalog.ErrExists):
-		httpx.Err(w, http.StatusConflict, "шаблон с таким названием уже существует")
+		httpx.Err(w, http.StatusConflict, "A template with this name already exists")
 	case errors.Is(err, catalog.ErrNotFound):
-		httpx.Err(w, http.StatusNotFound, "шаблон не найден")
+		httpx.Err(w, http.StatusNotFound, "Template not found")
 	default:
 		httpx.Err(w, http.StatusBadRequest, err.Error())
 	}
@@ -126,20 +126,20 @@ type templateIn struct {
 func (in *templateIn) validate() error {
 	in.Name = strings.TrimSpace(in.Name)
 	in.Vendor = strings.TrimSpace(in.Vendor)
-	if err := names.Check("название шаблона", in.Name); err != nil {
+	if err := names.Check("Template name", in.Name); err != nil {
 		return err
 	}
 	if utf8.RuneCountInString(in.Vendor) > 64 {
-		return errors.New("производитель: не более 64 символов")
+		return errors.New("Vendor: no more than 64 characters")
 	}
 	if !tplTypes[in.Type] {
-		return errors.New("недопустимый тип шаблона")
+		return errors.New("Invalid template type")
 	}
 	in.Category = strings.TrimSpace(in.Category)
 	if in.Category == "" {
 		in.Category = database.CategoryFor(in.Vendor, in.Type)
 	} else if !database.ValidCategory(in.Category) {
-		return errors.New("недопустимая категория шаблона")
+		return errors.New("Invalid template category")
 	}
 	in.VNC = in.VNC.Normalized()
 	if err := in.VNC.Validate(); err != nil {
@@ -188,7 +188,7 @@ func (h *Handler) createTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "template_create", in.Name)
-	h.notifyTemplates(r, "Шаблон создан", in.Name)
+	h.notifyTemplates(r, "Template created", in.Name)
 	t, _ := getTemplate(h.DB.Catalog, id)
 	httpx.JSON(w, http.StatusCreated, t)
 }
@@ -198,12 +198,12 @@ func (h *Handler) createTemplate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) duplicateTemplate(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	src, err := getTemplate(h.DB.Catalog, id)
 	if err != nil {
-		httpx.Err(w, http.StatusNotFound, "шаблон не найден")
+		httpx.Err(w, http.StatusNotFound, "Template not found")
 		return
 	}
 	name := copyTemplateName(src.Name)
@@ -222,7 +222,7 @@ func (h *Handler) duplicateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "template_duplicate", src.Name+" → "+name)
-	h.notifyTemplates(r, "Шаблон скопирован", name)
+	h.notifyTemplates(r, "Template copied", name)
 	t, _ := getTemplate(h.DB.Catalog, newID)
 	httpx.JSON(w, http.StatusCreated, t)
 }
@@ -232,23 +232,24 @@ func copyTemplateName(base string) string {
 	return copyTemplateNameWithNumber(base, 0)
 }
 
-// copyTemplateNameWithNumber builds the copy name in Latin: base-copy, base-copy-2, etc.
+// copyTemplateNameWithNumber builds the copy name: base-copy, base-copy-2, etc. The base is cut
+// to whole characters so the result stays within the name length limit.
 func copyTemplateNameWithNumber(base string, n int) string {
 	suffix := "-copy"
 	if n > 1 {
 		suffix = "-copy-" + strconv.Itoa(n)
 	}
-	b := strings.TrimSpace(base)
-	if limit := names.MaxLen - len(suffix); len(b) > limit {
+	b := []rune(strings.TrimSpace(base))
+	if limit := names.MaxLen - utf8.RuneCountInString(suffix); len(b) > limit {
 		b = b[:limit]
 	}
-	return b + suffix
+	return string(b) + suffix
 }
 
 func (h *Handler) updateTemplate(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	var in templateIn
@@ -270,7 +271,7 @@ func (h *Handler) updateTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "template_update", in.Name)
-	h.notifyTemplates(r, "Шаблон изменён", in.Name)
+	h.notifyTemplates(r, "Template changed", in.Name)
 	t, _ := getTemplate(h.DB.Catalog, id)
 	httpx.JSON(w, http.StatusOK, t)
 }
@@ -278,12 +279,12 @@ func (h *Handler) updateTemplate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	t, err := getTemplate(h.DB.Catalog, id)
 	if err != nil {
-		httpx.Err(w, http.StatusNotFound, "шаблон не найден")
+		httpx.Err(w, http.StatusNotFound, "Template not found")
 		return
 	}
 	if err := h.DB.Catalog.DeleteTemplate(id); err != nil {
@@ -291,11 +292,11 @@ func (h *Handler) deleteTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := clearTemplateRefs(h.DB, id); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "не удалось обновить лаборатории")
+		httpx.Err(w, http.StatusInternalServerError, "Could not update the laboratories")
 		return
 	}
 	h.audit(r, "template_delete", t.Name)
-	h.notifyTemplates(r, "Шаблон удалён", t.Name)
+	h.notifyTemplates(r, "Template deleted", t.Name)
 	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -305,7 +306,7 @@ func (h *Handler) notifyTemplates(r *http.Request, title, name string) {
 	if ss := auth.FromContext(r.Context()); ss != nil {
 		actor = ss.User.ID
 	}
-	h.Notify.SendActive(actor, notify.Info, "template", title, "Шаблон «"+name+"» в каталоге.", "/templates")
+	h.Notify.SendActive(actor, notify.Info, "template", title, "Template «{name}» in the catalog.", "/templates", notify.P("name", name))
 }
 
 // clearTemplateRefs removes the reference to a deleted template from lab topologies. Previously this was
@@ -322,7 +323,7 @@ func clearTemplateRefs(db *database.DB, tplID int64) error {
 		if !hit {
 			continue
 		}
-		if err := updateLab(db, l.ID, func(fl *labfile.Lab) error {
+		if err := updateLab(db, l.Name, func(fl *labfile.Lab) error {
 			for i := range fl.Devices {
 				if fl.Devices[i].TemplateID == tplID {
 					fl.Devices[i].TemplateID = 0

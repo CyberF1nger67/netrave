@@ -65,80 +65,80 @@ func TestAdminRolesCanBeAssignedAndChanged(t *testing.T) {
 	if rec := create(map[string]any{
 		"username": "newadmin", "password": "secret-pass-1", "confirm": "secret-pass-1", "role": "admin",
 	}); rec.Code != http.StatusCreated {
-		t.Fatalf("создание администратора: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("creating administrator: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	var count int
 	db.QueryRow(`SELECT COUNT(*) FROM users WHERE username='newadmin'`).Scan(&count)
 	if count != 1 {
-		t.Fatal("администратор не был создан")
+		t.Fatal("administrator was not created")
 	}
 
 	if rec := create(map[string]any{
 		"username": "mismatch", "password": "secret-pass-1", "confirm": "secret-pass-2", "role": "user",
 	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("несовпадающее подтверждение при создании: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("mismatched confirmation on create: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	db.QueryRow(`SELECT COUNT(*) FROM users WHERE username='mismatch'`).Scan(&count)
 	if count != 0 {
-		t.Fatal("пользователь создан с несовпадающим подтверждением")
+		t.Fatal("user created with mismatched confirmation")
 	}
 
 	if rec := create(map[string]any{
 		"username": "worker", "password": "secret-pass-1", "confirm": "secret-pass-1", "role": "user",
 	}); rec.Code != http.StatusCreated {
-		t.Fatalf("обычный пользователь: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("regular user: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPut, "/api/users/"+itoa(targetID), map[string]any{"role": "admin"}); rec.Code != http.StatusOK {
-		t.Fatalf("повышение до администратора: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("promotion to administrator: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := userRole(t, db, targetID); got != "admin" {
-		t.Fatalf("роль не изменилась: %q", got)
+		t.Fatalf("role did not change: %q", got)
 	}
 
 	otherAdminID, _, _ := addTestUser(t, db, as, "second-admin", "admin")
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPut, "/api/users/"+itoa(otherAdminID), map[string]any{"role": "user"}); rec.Code != http.StatusOK {
-		t.Fatalf("понижение администратора: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("demotion of administrator: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := userRole(t, db, otherAdminID); got != "user" {
-		t.Fatalf("роль администратора не изменилась: %q", got)
+		t.Fatalf("administrator role did not change: %q", got)
 	}
 
 	// You cannot demote yourself, even if there are other administrators in the system.
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPut, "/api/users/"+itoa(adminID), map[string]any{"role": "user"}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("понижение самого себя: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("self-demotion: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := userRole(t, db, adminID); got != "admin" {
-		t.Fatalf("собственная роль изменилась на %q", got)
+		t.Fatalf("own role changed to %q", got)
 	}
 
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPut, "/api/users/"+itoa(targetID), map[string]any{
 		"password": "reset-pass-123", "confirm": "different-pass-123",
 	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("несовпадающее подтверждение при сбросе: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("mismatched confirmation on reset: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	_, stored, err := as.FindByUsername("target")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if auth.VerifyPassword("reset-pass-123", stored) {
-		t.Fatal("пароль изменён несмотря на несовпадающее подтверждение")
+		t.Fatal("password changed despite mismatched confirmation")
 	}
 
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPut, "/api/users/"+itoa(targetID), map[string]any{
 		"password": "reset-pass-123", "confirm": "reset-pass-123",
 	}); rec.Code != http.StatusOK {
-		t.Fatalf("сброс пароля: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("password reset: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	_, stored, err = as.FindByUsername("target")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !auth.VerifyPassword("reset-pass-123", stored) {
-		t.Fatal("новый пароль администратора не сохранился")
+		t.Fatal("new administrator password was not saved")
 	}
 	if stored == "reset-pass-123" {
-		t.Fatal("пароль сохранён в открытом виде")
+		t.Fatal("password stored in plain text")
 	}
 }
 
@@ -152,20 +152,20 @@ func TestAdminHasImagesAndTemplatesAccess(t *testing.T) {
 	svc := notify.New(db)
 	mux := http.NewServeMux()
 	(&Handler{DB: db, Auth: as, Notify: svc}).Register(mux)
-	(&images.Handler{DB: db, Auth: as, Cfg: &config.Config{ImagesDir: t.TempDir()}, Notify: svc}).Register(mux)
+	(&images.Handler{DB: db, Auth: as, Cfg: &config.Config{DisksDir: t.TempDir()}, Notify: svc}).Register(mux)
 	(&labs.Handler{DB: db, Auth: as, Notify: svc}).Register(mux)
 
 	_, adminTok, adminCSRF := addTestUser(t, db, as, "root", "admin")
 	_, userTok, userCSRF := addTestUser(t, db, as, "plain", "user")
 
 	if rec := apiCall(t, mux, userTok, userCSRF, http.MethodPost, "/api/images/scan", nil); rec.Code != http.StatusForbidden {
-		t.Fatalf("сканирование образов без права: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("image scan without permission: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPost, "/api/images/scan", nil); rec.Code != http.StatusOK {
-		t.Fatalf("администратор и образы: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("administrator and images: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodGet, "/api/images", nil); rec.Code != http.StatusOK {
-		t.Fatalf("просмотр образов администратором: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("image view by administrator: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 
 	template := map[string]any{
@@ -174,11 +174,11 @@ func TestAdminHasImagesAndTemplatesAccess(t *testing.T) {
 		"nic_model": "e1000", "disk_bus": "virtio", "bios": "seabios", "console": "serial",
 	}
 	if rec := apiCall(t, mux, userTok, userCSRF, http.MethodPost, "/api/templates", template); rec.Code != http.StatusForbidden {
-		t.Fatalf("создание шаблона без права: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("template creation without permission: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	template["name"] = "Admin_template"
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPost, "/api/templates", template); rec.Code != http.StatusCreated {
-		t.Fatalf("администратор и шаблоны: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("administrator and templates: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -202,20 +202,20 @@ func TestChangeOwnPasswordRequiresMatchingConfirmation(t *testing.T) {
 	}
 
 	if rec := change("old-secret-123", "new-secret-123", "other-secret-123"); rec.Code != http.StatusBadRequest {
-		t.Fatalf("несовпадающее подтверждение: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("mismatched confirmation: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := change("wrong-password", "new-secret-123", "new-secret-123"); rec.Code != http.StatusForbidden {
-		t.Fatalf("неверный текущий пароль: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("wrong current password: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if rec := change("old-secret-123", "new-secret-123", "new-secret-123"); rec.Code != http.StatusOK {
-		t.Fatalf("совпадающее подтверждение: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("matching confirmation: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	_, stored, err := as.FindByUsername("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !auth.VerifyPassword("new-secret-123", stored) {
-		t.Fatal("новый пароль не сохранился")
+		t.Fatal("new password was not saved")
 	}
 }
 
@@ -242,26 +242,26 @@ func TestCreateUserWithCustomRole(t *testing.T) {
 		"username": "bob", "password": "secret-pass-1", "confirm": "secret-pass-1", "role": "user", "role_id": roleID,
 	})
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("создание пользователя с ролью: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("creating user with role: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	var n int
 	db.QueryRow(`SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id=ur.user_id WHERE u.username='bob' AND ur.role_id=?`, roleID).Scan(&n)
 	if n != 1 {
-		t.Fatal("роль не назначена при создании пользователя")
+		t.Fatal("role not assigned on user creation")
 	}
 
 	// An unknown role is rejected.
 	if rec := apiCall(t, mux, adminTok, adminCSRF, http.MethodPost, "/api/users", map[string]any{
 		"username": "carol", "password": "secret-pass-1", "role": "user", "role_id": 9999,
 	}); rec.Code != http.StatusBadRequest {
-		t.Fatalf("неизвестная роль: ожидался 400, получен %d", rec.Code)
+		t.Fatalf("unknown role: expected 400, got %d", rec.Code)
 	}
 
 	// A regular user with management permission cannot grant a role.
 	if rec := apiCall(t, mux, userTok, userCSRF, http.MethodPost, "/api/users", map[string]any{
 		"username": "dave", "password": "secret-pass-1", "role": "user", "role_id": roleID,
 	}); rec.Code != http.StatusForbidden {
-		t.Fatalf("выдача роли не администратором: ожидался 403, получен %d", rec.Code)
+		t.Fatalf("granting role by non-administrator: expected 403, got %d", rec.Code)
 	}
 	_ = userID
 }

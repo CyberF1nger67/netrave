@@ -1,3 +1,4 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useState } from 'react';
 import type { ThemeColors } from '../../types/api';
 import { applyTheme, baseOf, listThemes, readStandardColors, THEME_GROUPS, themeFromId, useThemeStore } from '../../stores/theme';
@@ -13,6 +14,8 @@ const card = 'relative flex h-full min-w-0 flex-col gap-2.5 rounded-app border b
 
 interface EditState {
   id: string | null;
+  /** Set when a ready-made theme is being changed: its preset id. */
+  presetId: string | null;
   name: string;
   colors: ThemeColors;
   origin: ThemeColors;
@@ -25,6 +28,7 @@ export function ThemesPage() {
   const pick = useThemeStore((store) => store.pick);
   const saveCustom = useThemeStore((store) => store.saveCustom);
   const deleteCustom = useThemeStore((store) => store.deleteCustom);
+  const savePreset = useThemeStore((store) => store.savePreset);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [notice, setNotice] = useState('');
   useLanguageStore((state) => state.language);
@@ -33,7 +37,8 @@ export function ThemesPage() {
   const startEdit = (theme: ResolvedTheme, mode: 'new' | 'copy' | 'edit') => {
     const colors = theme.colors ? { ...theme.colors } : readStandardColors(theme.base);
     const name = mode === 'edit' ? theme.name : mode === 'copy' ? `${theme.name} (${t('Copy')})`.slice(0, 40) : t('My theme');
-    const next = { id: mode === 'edit' ? theme.cid ?? null : null, name, colors, origin: { ...colors } };
+    const presetId = mode === 'edit' && theme.kind === 'preset' ? theme.id.slice('preset:'.length) : null;
+    const next = { id: mode === 'edit' ? theme.cid ?? null : null, presetId, name, colors, origin: { ...colors } };
     setEdit(next);
     setNotice('');
     applyTheme(baseOf(colors), colors);
@@ -55,7 +60,9 @@ export function ThemesPage() {
   const save = async () => {
     if (!edit) return;
     if (!edit.name.trim()) { toast.error(t('Theme name')); return; }
-    const error = await saveCustom(edit.id, edit.name.trim(), edit.colors);
+    const error = edit.presetId
+      ? await savePreset(edit.presetId, edit.name.trim(), edit.colors)
+      : await saveCustom(edit.id, edit.name.trim(), edit.colors);
     if (error) { setNotice(`${t('Could not save theme:')} ${error}`); return; }
     setEdit(null);
     setNotice(t('Theme saved.'));
@@ -88,10 +95,10 @@ export function ThemesPage() {
               </div>
               <div className="mt-auto flex min-h-7 flex-wrap items-center gap-1.5 pt-0.5 [&>button]:min-h-7 [&>button]:px-2.5 [&>button]:py-1 [&>button]:text-xs">
                 {canCreate && <button type="button" onClick={(event) => { event.stopPropagation(); startEdit(theme, 'copy'); }}>{t('Copy')}</button>}
-                {theme.kind === 'custom' && <button type="button" onClick={(event) => { event.stopPropagation(); startEdit(theme, 'edit'); }}>{t('Edit')}</button>}
-                {theme.kind === 'custom' && <button type="button" className={danger} onClick={(event) => {
+                {theme.kind !== 'standard' && <button type="button" onClick={(event) => { event.stopPropagation(); startEdit(theme, 'edit'); }}>{t('Edit')}</button>}
+                {theme.kind !== 'standard' && <button type="button" className={danger} onClick={async (event) => {
                   event.stopPropagation();
-                  if (!confirm(`${t('Delete')} «${theme.name}»?`)) return;
+                  if (!(await askConfirm({ title: `${t('Delete')} «${theme.name}»?`, danger: true }))) return;
                   if (edit?.id === theme.cid) setEdit(null);
                   void deleteCustom(theme.cid ?? '').then((error) => { if (error) setNotice(`${t('Could not save theme:')} ${error}`); });
                 }}>{t('Delete')}</button>}
@@ -101,7 +108,7 @@ export function ThemesPage() {
         })}
       </div>
       {edit && (
-        <Modal title={edit.id ? t('Edit theme') : t('New theme')} onClose={cancelEdit} wide actions={[
+        <Modal title={edit.id || edit.presetId ? t('Edit theme') : t('New theme')} onClose={cancelEdit} wide actions={[
           { label: t('Cancel'), onClick: cancelEdit },
           { label: t('Restore originals'), onClick: () => { const colors = { ...edit.origin }; setEdit({ ...edit, colors }); applyTheme(baseOf(colors), colors); }, closeOnClick: false },
           { label: t('Save theme'), primary: true, onClick: () => save() },
@@ -114,7 +121,7 @@ export function ThemesPage() {
                 {group.keys.map(([key, label]) => (
                   <div className="flex min-w-0 items-center gap-2.5" key={key}>
                     <span className="min-w-0 flex-1 text-[13px]">{t(label as Parameters<typeof t>[0])}</span>
-                    <input className="size-11 min-h-0 flex-none cursor-pointer p-0.5" type="color" value={edit.colors[key] ?? '#000000'} aria-label={label} onChange={(event) => setColor(key, event.target.value)} />
+                    <input className="size-11 min-h-0 flex-none cursor-pointer p-0.5" type="color" value={edit.colors[key] ?? '#000000'} aria-label={t(label as Parameters<typeof t>[0])} onChange={(event) => setColor(key, event.target.value)} />
                     <input className="w-24 flex-none font-mono text-[13px] lowercase" value={edit.colors[key] ?? ''} maxLength={7} spellCheck={false} aria-label={`${label} (HEX)`} onChange={(event) => {
                       const value = event.target.value.trim();
                       if (/^#?[0-9a-f]{6}$/i.test(value)) setColor(key, '#' + value.replace('#', '').toLowerCase());

@@ -1,3 +1,4 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { iconsApi } from '../../api/endpoints';
@@ -69,8 +70,8 @@ export function IconsPage() {
         <input ref={folderRef} type="file" multiple hidden {...folderInputProps} onChange={(event) => { const files = [...(event.target.files ?? [])]; event.target.value = ''; void importFiles(files); }} />
         <button type="button" className={primary} disabled={busy} onClick={() => fileRef.current?.click()}>{t('Upload image')}</button>
         <button type="button" disabled={busy} onClick={() => folderRef.current?.click()}>{t('Upload folder')}</button>
-        <button type="button" className={danger} disabled={busy || selected.size === 0} onClick={() => {
-          if (!confirm(`${t('Delete selected')} (${selected.size})?`)) return;
+        <button type="button" className={danger} disabled={busy || selected.size === 0} onClick={async () => {
+          if (!(await askConfirm({ title: `${t('Delete selected')} (${selected.size})?`, danger: true }))) return;
           void guard(async () => {
             const failed: string[] = [];
             for (const item of items.filter((entry) => selected.has(entry.id))) {
@@ -94,8 +95,8 @@ export function IconsPage() {
                 <td className="max-w-[260px] truncate">{item.name}</td><td>{item.width}×{item.height}</td><td>{item.has_alpha ? t('Yes') : t('No')}</td><td>{item.used_by}</td>
                 <td><div className="flex flex-wrap items-center gap-1.5 [&>button]:min-h-[30px] [&>button]:px-[11px] [&>button]:py-[5px] [&>button]:text-[13px]">
                   <button type="button" onClick={() => setRename(item)}>{t('Edit')}</button>
-                  <button type="button" className={danger} onClick={() => {
-                    if (!confirm(`${t('Delete icon?')} «${item.name}»`)) return;
+                  <button type="button" className={danger} onClick={async () => {
+                    if (!(await askConfirm({ title: `${t('Delete icon?')} «${item.name}»`, danger: true }))) return;
                     void guard(async () => { await iconsApi.remove(item.id); await reload(); });
                   }}>{t('Delete')}</button>
                 </div></td>

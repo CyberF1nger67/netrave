@@ -8,9 +8,9 @@ import { Modal } from '../../components/ui/Modal';
 import { Spinner } from '../../components/ui/Spinner';
 import { Switch } from '../../components/ui/Switch';
 import { Dropdown } from '../../components/ui/Dropdown';
-import { t } from '../../i18n';
+import { t, translateMessage } from '../../i18n';
 
-export function LabDialog({ lab, folderId = 0, folderName = null, onClose, onSaved }: { lab: Lab | null; folderId?: number; folderName?: string | null; onClose: () => void; onSaved: () => void }) {
+export function LabDialog({ lab, folderId = '', folderName = null, onClose, onSaved }: { lab: Lab | null; folderId?: string; folderName?: string | null; onClose: () => void; onSaved: () => void }) {
   const navigate = useNavigate();
   const [name, setName] = useState(lab?.name ?? '');
   const [description, setDescription] = useState(lab?.description ?? '');
@@ -19,30 +19,32 @@ export function LabDialog({ lab, folderId = 0, folderName = null, onClose, onSav
       { label: t('Cancel'), onClick: onClose },
       { label: lab ? t('Save') : t('Create'), primary: true, onClick: async () => {
         if (lab) {
-          await labsApi.update(lab.id, { name, description });
+          await labsApi.update(lab.name, { name, description });
           toast.success(t('Saved')); onSaved(); onClose();
+          if (name !== lab.name) navigate(labPath({ name, folder_id: lab.folder_id }, folderName));
         } else {
           const created = await labsApi.create(name, description);
-          if (folderId) await foldersApi.placeLab(created.id, folderId);
+          if (folderId) await foldersApi.placeLab(created.name, folderId);
           onSaved(); onClose();
           // The new lab opens immediately; the URL includes its folder name.
           navigate(labPath({ name: created.name, folder_id: folderId }, folderName));
         }
       } },
     ]}>
-      <label htmlFor="lab-name">{t('Name')}</label><input id="lab-name" value={name} maxLength={80} onChange={(event) => setName(event.target.value)} />
+      <label htmlFor="lab-name">{t('Name')}</label><input id="lab-name" value={name} maxLength={80} disabled={!!lab?.running} onChange={(event) => setName(event.target.value)} />
+      {lab?.running && <p className="text-muted">{t('The laboratory is running: stop it before renaming')}</p>}
       <label htmlFor="lab-description">{t('Description')}</label><textarea id="lab-description" rows={4} maxLength={2000} value={description} onChange={(event) => setDescription(event.target.value)} />
     </Modal>
   );
 }
 
-export function WipeLabDialog({ lab, instance, onClose, onDone }: { lab: { id: number; name: string }; instance?: number | undefined; onClose: () => void; onDone: () => void }) {
+export function WipeLabDialog({ lab, instance, onClose, onDone }: { lab: { id: string; name: string }; instance?: number | undefined; onClose: () => void; onDone: () => void }) {
   return (
     <Modal title={t('Wipe Lab')} onClose={onClose} actions={[
       { label: t('Cancel'), onClick: onClose },
       { label: t('Reset laboratory'), primary: true, danger: true, onClick: async () => {
         const result = await labsApi.wipe(lab.id, instance);
-        if (result.failed.length) toast.warning(`${t('Reset completed with errors')}: ${result.devices}, ${result.failed.join('; ')}`);
+        if (result.failed.length) toast.warning(`${t('Reset completed with errors')}: ${result.devices}, ${result.failed.map((item) => translateMessage(item.key, item.params)).join('; ')}`);
         else toast.success(`${t('Laboratory reset')}: ${result.devices}`);
         onDone(); onClose();
       } },
@@ -104,7 +106,7 @@ export function AccessDialog({ lab, onClose }: { lab: Lab; onClose: () => void }
                     <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2">
                       {data.catalog.map((perm) => (
                         <div key={perm.key} className="flex items-start gap-2">
-                          <Switch className="flex items-start gap-2.5 rounded-md px-0.5 py-[5px] text-[13.5px] hover:text-text" checked={Boolean(current.perms[perm.key])} title={perm.key}
+                          <Switch className="flex items-start gap-2.5 rounded-md px-0.5 py-[5px] text-[13.5px] hover:text-text" checked={Boolean(current.perms[perm.key])}
                             label={perm.title}
                             onChange={(checked) => void toggle(current.id, perm.key, checked)} />
                           {current.role_perms?.[perm.key] && <span className="whitespace-nowrap rounded-full bg-accent-soft px-2 py-[2px] text-[11px] text-accent">{t('from role')}</span>}

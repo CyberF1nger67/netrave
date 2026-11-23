@@ -14,6 +14,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"netrave/internal/msgs"
 )
 
 // SVG icons are cleaned against a whitelist: scripts, event handlers, external
@@ -88,7 +90,7 @@ func cleanSVG(data []byte) ([]byte, Info, error) {
 			break
 		}
 		if err != nil {
-			return nil, Info{}, fmt.Errorf("повреждённый SVG: %v", err)
+			return nil, Info{}, msgs.Wrap(err, "Damaged SVG: {detail}", map[string]string{"detail": err.Error()})
 		}
 		switch value := token.(type) {
 		case xml.ProcInst:
@@ -96,9 +98,9 @@ func cleanSVG(data []byte) ([]byte, Info, error) {
 			if !rootSeen && strings.EqualFold(value.Target, "xml") {
 				continue
 			}
-			return nil, Info{}, errors.New("SVG: недопустимая инструкция обработки")
+			return nil, Info{}, errors.New("SVG: invalid processing instruction")
 		case xml.Directive:
-			return nil, Info{}, errors.New("SVG: недопустимая директива")
+			return nil, Info{}, errors.New("SVG: invalid directive")
 		case xml.Comment:
 			continue
 		case xml.CharData:
@@ -117,20 +119,20 @@ func cleanSVG(data []byte) ([]byte, Info, error) {
 			// elements with their own namespaces.
 			if rootSeen && local == "metadata" {
 				if err := decoder.Skip(); err != nil {
-					return nil, Info{}, fmt.Errorf("SVG: повреждённые метаданные: %v", err)
+					return nil, Info{}, msgs.Wrap(err, "SVG: damaged metadata: {detail}", map[string]string{"detail": err.Error()})
 				}
 				continue
 			}
 			allowed := allowedSVGElements[local]
 			if !allowed {
-				return nil, Info{}, fmt.Errorf("SVG: элемент <%s> не разрешён", local)
+				return nil, Info{}, msgs.New("SVG: element <{element}> is not allowed", map[string]string{"element": local})
 			}
 			if !rootSeen {
 				if local != "svg" {
-					return nil, Info{}, errors.New("SVG: корневой элемент должен быть <svg>")
+					return nil, Info{}, errors.New("SVG: the root element must be <svg>")
 				}
 				if value.Name.Space != "" && value.Name.Space != "http://www.w3.org/2000/svg" {
-					return nil, Info{}, errors.New("SVG: неверное пространство имён")
+					return nil, Info{}, errors.New("SVG: wrong namespace")
 				}
 				rootSeen = true
 				attrs, size, err := sanitizeSVGAttrs(value.Attr, true)
@@ -146,7 +148,7 @@ func cleanSVG(data []byte) ([]byte, Info, error) {
 				continue
 			}
 			if value.Name.Space != "" && value.Name.Space != "http://www.w3.org/2000/svg" {
-				return nil, Info{}, errors.New("SVG: неверное пространство имён")
+				return nil, Info{}, errors.New("SVG: wrong namespace")
 			}
 			attrs, _, err := sanitizeSVGAttrs(value.Attr, false)
 			if err != nil {
@@ -158,29 +160,29 @@ func cleanSVG(data []byte) ([]byte, Info, error) {
 			open++
 		case xml.EndElement:
 			if !rootSeen {
-				return nil, Info{}, errors.New("SVG: некорректный корневой элемент")
+				return nil, Info{}, errors.New("SVG: invalid root element")
 			}
 			if err := encoder.EncodeToken(xml.EndElement{Name: xml.Name{Local: value.Name.Local}}); err != nil {
 				return nil, Info{}, err
 			}
 			open--
 			if open < 0 {
-				return nil, Info{}, errors.New("SVG: лишний закрывающий элемент")
+				return nil, Info{}, errors.New("SVG: extra closing element")
 			}
 		}
 	}
 	if !rootSeen || open != 0 {
-		return nil, Info{}, errors.New("SVG: незавершённый документ")
+		return nil, Info{}, errors.New("SVG: unfinished document")
 	}
 	if err := encoder.Flush(); err != nil {
 		return nil, Info{}, err
 	}
 	if out.Len() > MaxBytes {
-		return nil, Info{}, fmt.Errorf("файл больше %d КБ после обработки", MaxBytes>>10)
+		return nil, Info{}, msgs.New("The file is larger than {size} KB after processing", map[string]string{"size": fmt.Sprint(MaxBytes >> 10)})
 	}
 	width, height := normalizeSVGDims(dims)
 	if width < 1 || height < 1 {
-		return nil, Info{}, errors.New("SVG: не удалось определить размеры (нужны width/height или viewBox)")
+		return nil, Info{}, errors.New("SVG: could not determine the size (width/height or viewBox needed)")
 	}
 	sum := sha256.Sum256(out.Bytes())
 	return out.Bytes(), Info{
@@ -205,17 +207,17 @@ func sanitizeSVGAttrs(attrs []xml.Attr, root bool) ([]xml.Attr, svgDims, error) 
 			continue
 		}
 		if attr.Name.Space != "" {
-			return nil, dims, fmt.Errorf("SVG: атрибут %q не разрешён", attr.Name.Local)
+			return nil, dims, msgs.New("SVG: attribute {attribute} is not allowed", map[string]string{"attribute": attr.Name.Local})
 		}
 		local := attr.Name.Local
 		if !allowedSVGAttrs[local] {
-			return nil, dims, fmt.Errorf("SVG: атрибут %q не разрешён", local)
+			return nil, dims, msgs.New("SVG: attribute {attribute} is not allowed", map[string]string{"attribute": local})
 		}
 		if local == "id" && !idValueRe.MatchString(attr.Value) {
-			return nil, dims, fmt.Errorf("SVG: некорректный id %q", attr.Value)
+			return nil, dims, msgs.New("SVG: invalid id {id}", map[string]string{"id": attr.Value})
 		}
 		if !safeSVGValue(attr.Value) {
-			return nil, dims, fmt.Errorf("SVG: недопустимое значение атрибута %q", local)
+			return nil, dims, msgs.New("SVG: invalid attribute value in {attribute}", map[string]string{"attribute": local})
 		}
 		out = append(out, xml.Attr{Name: xml.Name{Local: local}, Value: attr.Value})
 		if !root {

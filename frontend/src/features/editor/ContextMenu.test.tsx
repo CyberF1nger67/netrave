@@ -3,13 +3,11 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 
 function build() {
-  const run = { isolated: vi.fn(), nat: vi.fn(), cloud: vi.fn(), paste: vi.fn() };
+  const run = { nat: vi.fn(), paste: vi.fn() };
   const items: MenuItem[] = [
     { label: 'Add machine', run: vi.fn() },
     { label: 'Add network', sub: [
-      { label: 'Isolated', run: run.isolated },
       { label: 'NAT', run: run.nat },
-      { label: 'Cloud', run: run.cloud },
     ] },
     { separator: true },
     { label: 'Paste', disabled: false, run: run.paste },
@@ -31,7 +29,9 @@ describe('ContextMenu', () => {
     build();
     fireEvent.click(screen.getByRole('button', { name: /Add network/ }));
     expect(screen.getByRole('menu')).toBeInTheDocument();
-    for (const name of ['Isolated', 'NAT', 'Cloud']) expect(screen.getByRole('button', { name })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'NAT' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Isolated' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cloud' })).toBeNull();
   });
 
   it('renders the submenu outside the scrolling list, so overflow cannot clip it', () => {
@@ -49,23 +49,13 @@ describe('ContextMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: /Add network/ }));
     fireEvent.click(screen.getByRole('button', { name: 'NAT' }));
     expect(run.nat).toHaveBeenCalledTimes(1);
-    expect(run.isolated).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
-  });
-
-  it('runs every network option', () => {
-    const { run } = build();
-    for (const name of ['Isolated', 'Cloud'] as const) {
-      fireEvent.click(screen.getByRole('button', { name: /Add network/ }));
-      fireEvent.click(screen.getByRole('button', { name }));
-      expect(run[name.toLowerCase() as 'isolated' | 'cloud']).toHaveBeenCalledTimes(1);
-    }
   });
 
   it('keeps the menu open when clicking inside the submenu', () => {
     const { onClose } = build();
     fireEvent.click(screen.getByRole('button', { name: /Add network/ }));
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Cloud' }));
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'NAT' }));
     expect(onClose).not.toHaveBeenCalled();
   });
 

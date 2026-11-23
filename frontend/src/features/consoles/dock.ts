@@ -4,10 +4,14 @@ import type { ConsoleEntry } from './registry';
 import { createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Root } from 'react-dom/client';
-import { TextTerminal, canTakeKeyboard } from '../terminal/TextTerminal';
+import { XtermTerminal, canTakeKeyboard } from './XtermTerminal';
 import { VNCView, VNC_COMBOS } from '../vnc/VNCView';
 import { QualityControl } from '../vnc/QualityControl';
 import { createSerialKeyboard } from './serialKeys';
+import { createClipField, replaceClipText } from './clipField';
+import { copyText, readClipboardText } from './clipboard';
+import { DockBus, createBrowserChannel, PAGE_HEARTBEAT_MS } from './bus';
+import { moveEntry } from './tabOrder';
 import { deviceIconSrc } from '../../lib/deviceIcon';
 import { onLanguageChange, t } from '../../i18n';
 import { CONTROL_PONG, ReconnectSocket } from './reconnect';
@@ -18,7 +22,7 @@ const CLIPBOARD_PERM = 'console.clipboard';
 
 const PRIMARY = 'border-transparent bg-gradient-to-br from-accent to-accent-2 font-semibold text-on-accent hover:brightness-110';
 const HEAD_BTN = 'px-[9px] py-0.5';
-const DOCK_BASE = 'fixed z-[75] flex h-[520px] w-[820px] min-h-[280px] min-w-[420px] flex-col overflow-hidden border bg-panel shadow-[0_24px_60px_-24px_rgba(0,0,0,.75),0_2px_8px_rgba(0,0,0,.35),inset_0_1px_0_rgba(255,255,255,.05)] data-resizing:select-none data-resizing:[&_[data-console-panels]]:pointer-events-none [&:fullscreen_[data-resizer]]:hidden';
+const DOCK_BASE = 'fixed z-[75] flex h-[min(520px,calc(100vh-2rem))] w-[min(820px,calc(100vw-2rem))] min-h-[min(280px,calc(100vh-2rem))] min-w-[min(420px,calc(100vw-2rem))] flex-col overflow-hidden border bg-panel shadow-[0_24px_60px_-24px_rgba(0,0,0,.75),0_2px_8px_rgba(0,0,0,.35),inset_0_1px_0_rgba(255,255,255,.05)] data-resizing:select-none data-resizing:[&_[data-console-panels]]:pointer-events-none [&:fullscreen_[data-resizer]]:hidden';
 const DOCK_FLOAT = 'bottom-4 right-4 rounded-[16px] border-[rgba(148,163,184,.18)]';
 const DOCK_PAGE = 'inset-0 h-auto w-auto rounded-none border-0 bg-[linear-gradient(180deg,#0b111a,#070a0f)] shadow-none [&_[data-term]]:px-[22px] [&_[data-term]]:py-[18px] [&_[data-vkbd]]:bottom-3.5 [&_[data-vclip]]:right-3.5 [&_[data-vclip]]:top-3.5';
 const HEAD = 'flex flex-none cursor-move select-none items-center gap-1.5 border-b border-line bg-gradient-to-b from-panel2 to-panel px-2.5 py-2';
@@ -39,6 +43,7 @@ const DOT_ST: Record<'ok' | 'ext' | 'off', string> = {
 };
 const BAR = 'flex flex-none flex-wrap items-center gap-1.5 border-b border-line bg-panel px-2.5 py-1.5 [&>button]:px-[9px] [&>button]:py-[3px] [&>button]:text-xs';
 const BAR_ON = 'border-accent bg-accent-soft text-accent';
+const VNC_FS_BAR = 'absolute left-0 right-0 top-0 z-[5] flex flex-wrap items-center gap-1.5 bg-[rgba(14,21,32,.82)] px-2.5 py-1.5 backdrop-blur [&>button]:px-[9px] [&>button]:py-[3px] [&>button]:text-xs';
 const ZOOM = 'min-w-[44px] text-center text-xs tabular-nums text-muted';
 const STATUS = 'max-w-[50%] overflow-hidden text-ellipsis whitespace-nowrap text-xs text-muted';
 const PANELS = 'relative min-h-0 flex-1 bg-[#070a0f] shadow-[inset_0_1px_0_rgba(255,255,255,.03)]';
@@ -66,28 +71,6 @@ const RESIZERS: Record<string, string> = {
   sw: 'absolute bottom-0 left-0 z-[5] size-3.5 cursor-nesw-resize bg-transparent',
 };
 
-async function copyText(text: string): Promise<boolean> {
-  if (!text) return false;
-  try {
-    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return true; }
-  } catch {
-    // Below is a fallback for browsers without the Clipboard API.
-  }
-  const textarea = document.createElement('textarea');
-  textarea.style.cssText = 'position:fixed;opacity:0;left:-9999px';
-  textarea.value = text;
-  document.body.append(textarea);
-  textarea.select();
-  let ok = false;
-  try { ok = document.execCommand('copy'); } catch { ok = false; }
-  textarea.remove();
-  return ok;
-}
-
-async function readClipboardText(): Promise<string> {
-  try { return (await navigator.clipboard?.readText?.()) ?? ''; } catch { return ''; }
-}
-
 interface Session {
   readonly kind: 'serial' | 'vnc';
   readonly dev: ConsoleDevice;
@@ -96,7 +79,6 @@ interface Session {
   message: string;
   layout: () => void;
   focusInput: () => void;
-  reconnect: () => void;
   dispose: () => void;
 }
 
@@ -107,7 +89,7 @@ class SerialSession implements Session {
   readonly kind = 'serial' as const;
   readonly dev: ConsoleDevice;
   readonly panel = document.createElement('div');
-  readonly view: TextTerminal;
+  readonly view: XtermTerminal;
   state: SessionState = 'ok';
   message = '';
   kbd: HTMLDivElement | null = null;
@@ -124,7 +106,7 @@ class SerialSession implements Session {
     this.panel.className = PANEL;
     this.panel.dataset['consolePanel'] = '';
     dock.panels.append(this.panel);
-    this.view = new TextTerminal(this.panel, (data) => {
+    this.view = new XtermTerminal(this.panel, (data) => {
       // Terminal input is binary so text frames stay reserved for console control.
       const bytes = new TextEncoder().encode(data);
       this.socket.send(bytes);
@@ -132,7 +114,7 @@ class SerialSession implements Session {
     this.view.onZoom = (direction) => { this.dock.zoom(direction); };
     this.view.onCapture = () => { this.dock.renderBar(); };
     this.view.onPasteDenied = () => { this.notify(t('Paste is disabled by the administrator')); };
-    this.view.setFont(dock.font);
+    this.view.setZoomOffset(dock.zoomStep);
     this.socket = new ReconnectSocket({
       url: () => `${wsURL('serial', this.dev.rid)}${this.initialized ? `?after=${this.received}` : ''}`,
       open: () => { this.state = 'ok'; this.dock.render(); },
@@ -223,10 +205,7 @@ class SerialSession implements Session {
     close.onclick = () => this.closeClip();
     head.append(title, close);
 
-    const textarea = document.createElement('textarea');
-    textarea.className = CLIP_TEXT;
-    textarea.spellcheck = false;
-    textarea.placeholder = t('Text to paste into VM (multiple lines allowed)');
+    const textarea = createClipField(t('Text to paste into VM (multiple lines allowed)'), CLIP_TEXT);
     textarea.value = this.view.selectedText() || this.clipText;
 
     const status = document.createElement('div');
@@ -254,18 +233,18 @@ class SerialSession implements Session {
     });
     add(t('Copy screen'), t('Copy screen'), () => {
       const text = this.view.screenText();
-      textarea.value = text;
+      replaceClipText(textarea, text);
       status.textContent = text ? t('Screen copied to the field') : t('Nothing to copy');
     });
     add(t('Read clipboard'), t('Read clipboard'), () => {
       void readClipboardText().then((text) => {
         if (!text) { status.textContent = t('Could not read the clipboard'); return; }
-        textarea.value = text;
+        replaceClipText(textarea, text);
         status.textContent = t('Text received from the browser');
       });
     });
     add(t('Clear'), t('Clear'), () => {
-      textarea.value = '';
+      replaceClipText(textarea, '');
       status.textContent = '';
     });
 
@@ -288,7 +267,6 @@ class SerialSession implements Session {
     this.dock.renderBar();
   }
 
-  reconnect(): void { this.socket.restart(); }
   dispose(): void {
     this.socket.stop();
     this.closeKbd();
@@ -352,7 +330,6 @@ class VNCSession implements Session {
     this.dock.renderBar();
   }
 
-  reconnect(): void { this.socket.restart(); }
   dispose(): void {
     this.socket.stop();
     this.qualityRoot.unmount();
@@ -381,11 +358,14 @@ function overlap(a: { left: number; top: number; right: number; bottom: number }
 }
 
 export class ConsoleDock {
-  font = 13;
+  // Font size offset from the default serial font size; the grid grows or shrinks with the panel.
+  zoomStep = 0;
   private page: boolean;
   private sessions: Session[] = [];
   activeId: number | null = null;
   private minimized = false;
+  // True while an application tab is open in another window: this floating window stays hidden.
+  private suppressed = false;
   private userMoved = false;
   private sideOpen = false;
   private sideOutside: ((event: MouseEvent) => void) | null = null;
@@ -408,17 +388,15 @@ export class ConsoleDock {
 
   constructor(page: boolean) {
     this.page = page;
-    // On a separate tab the terminal takes the whole screen, so the font is slightly larger.
-    if (page) this.font = 14;
     this.titleEl = h('div');
     this.sideBtn = button(t('All terminals'), '☰', () => this.toggleSide(), HEAD_BTN);
     this.head = h('div', `${HEAD} ${page ? HEAD_PAGE : HEAD_FLOAT}`);
     this.head.dataset['dockHead'] = '';
     this.head.append(this.titleEl, this.sideBtn, h('span', 'flex-1'),
-      button(t('Reconnect current'), '↻', () => this.active()?.reconnect()),
       button(t('Full screen'), '⛶', () => this.fullscreen()),
-      ...(page ? [] : [button(t('Current console in a new tab'), '⧉', () => this.popOutActive()), button(t('Minimize'), '–', () => this.minimize())]),
-      button(page ? t('Close') : t('Close all'), '✕', () => { if (page) window.close(); else this.closeAll(); }));
+      // Application tab: no window controls, the browser tab itself is closed by the user.
+      // Floating window: a single control with a close icon that minimizes the window.
+      ...(page ? [] : [button(t('Current console in a new tab'), '⧉', () => this.popOutActive()), button(t('Minimize'), '✕', () => this.minimize())]));
     this.tabs = h('div', `${TABS}${page ? ' px-[18px]' : ''}`);
     this.bar = h('div', `${BAR}${page ? ' bg-[rgba(14,21,32,.72)] px-[18px] py-2' : ''}`);
     this.panels = h('div', `${PANELS}${page ? ' bg-transparent' : ''}`);
@@ -458,6 +436,8 @@ export class ConsoleDock {
   active(): Session | null { return this.activeId === null ? null : this.sessionOf(this.activeId); }
 
   sync(): void {
+    // The application tab is the terminal of record: it takes consoles that no window owns.
+    if (this.page) this.claimUnowned();
     const list = readConsoles();
     for (const session of [...this.sessions]) {
       const entry = list.find((item) => item.id === session.dev.rid);
@@ -511,6 +491,15 @@ export class ConsoleDock {
 
   fitActive(): void { this.active()?.layout(); this.renderBar(); }
 
+  // Another window asked for this terminal: restore it and focus its active console.
+  raise(): void {
+    if (this.suppressed) return;
+    if (this.minimized) this.restore();
+    this.render();
+    this.focusActive();
+    window.focus();
+  }
+
   // The "Console" button in the lab: restores the collapsed dock or
   // shows the machine list if no console is open yet.
   showLauncher(anchor?: HTMLElement): void {
@@ -527,11 +516,12 @@ export class ConsoleDock {
     const entryKind = kind ?? (device.console === 'vnc' ? 'vnc' : 'serial');
     const list = readConsoles();
     const entry = list.find((item) => item.id === device.rid);
-    if (!entry) list.push({ id: device.rid, name: device.name, lab: device.lab_id || 0, owner: WINDOW_ID, kind: entryKind });
+    if (!entry) list.push({ id: device.rid, name: device.name, lab: device.lab_id || '', owner: this.suppressed ? null : WINDOW_ID, kind: entryKind });
     else {
-      if (force || !entry.owner) entry.owner = WINDOW_ID;
+      // A hidden floating window leaves the console unowned so the application tab takes it.
+      if (!this.suppressed && (force || !entry.owner)) entry.owner = WINDOW_ID;
       if (kind) entry.kind = kind;
-      entry.name = device.name; entry.lab = device.lab_id || 0;
+      entry.name = device.name; entry.lab = device.lab_id || '';
     }
     writeConsoles(list);
     this.activeId = device.rid;
@@ -573,21 +563,21 @@ export class ConsoleDock {
     if (!list.length) return;
     const ids = list.map((entry) => entry.id);
     const active = list.some((entry) => entry.id === this.activeId) ? this.activeId : ids[0];
-    const lab = list.find((entry) => entry.id === active)?.lab ?? 0;
-    window.open(`/console.html?lab=${lab}&ids=${ids.join(',')}&active=${active ?? ''}`, '_blank');
+    const lab = list.find((entry) => entry.id === active)?.lab ?? '';
+    window.open(`/console.html?lab=${encodeURIComponent(lab)}&ids=${ids.join(',')}&active=${active ?? ''}`, '_blank');
     this.releaseOwn(ids);
   }
 
   private popOutActive(): void {
     const session = this.active();
     if (!session) return;
-    window.open(`/console.html?lab=${session.dev.lab_id || 0}&ids=${session.dev.rid}&active=${session.dev.rid}`, '_blank');
+    window.open(`/console.html?lab=${encodeURIComponent(session.dev.lab_id || '')}&ids=${session.dev.rid}&active=${session.dev.rid}`, '_blank');
     this.releaseOwn([session.dev.rid]);
   }
 
   zoom(direction: number): void {
-    this.font = Math.max(9, Math.min(26, this.font + direction));
-    for (const session of this.sessions) if (session instanceof SerialSession) session.view.setFont(this.font);
+    this.zoomStep = Math.max(-12, Math.min(16, this.zoomStep + direction));
+    for (const session of this.sessions) if (session instanceof SerialSession) session.view.setZoomOffset(this.zoomStep);
     this.renderBar();
   }
 
@@ -741,6 +731,32 @@ export class ConsoleDock {
     this.el.style.top = `${spot.y}px`;
   }
 
+  /**
+   * An application tab opened in another window: this floating window hands its consoles over
+   * (the tab reconnects them) and hides. When the tab closes, it takes back whatever is unowned.
+   */
+  setPageOpen(open: boolean): void {
+    if (this.page) return;
+    this.suppressed = open;
+    if (open) this.releaseOwn();
+    else { this.claimUnowned(); this.sync(); }
+    this.render();
+  }
+
+  /** A window that owned consoles is gone (its tab closed or stopped answering): its consoles become unowned. */
+  releaseOwner(owner: string): void {
+    const list = readConsoles(); let changed = false;
+    for (const entry of list) if (entry.owner === owner) { entry.owner = null; changed = true; }
+    if (changed) writeConsoles(list);
+    this.sync();
+  }
+
+  private claimUnowned(): void {
+    const list = readConsoles(); let changed = false;
+    for (const entry of list) if (!entry.owner) { entry.owner = WINDOW_ID; changed = true; }
+    if (changed) writeConsoles(list);
+  }
+
   private minimize(): void { this.minimized = true; this.render(); }
   private restore(): void { this.minimized = false; this.render(); this.fitActive(); }
   private fullscreen(): void { if (document.fullscreenElement) void document.exitFullscreen(); else if (this.el.requestFullscreen) void this.el.requestFullscreen().catch(() => undefined); }
@@ -753,7 +769,7 @@ export class ConsoleDock {
       ? `${t('Console')}${active ? ` · ${active.dev.name}` : ''}`
       : `${t('Console')}${list.length ? `: ${list.length}` : ''}`;
     this.titleEl.title = this.titleEl.textContent;
-    this.el.classList.toggle('hidden', list.length === 0 || this.minimized);
+    this.el.classList.toggle('hidden', list.length === 0 || this.minimized || this.suppressed);
     this.renderTabs(list); this.renderBar(); this.renderSide();
     this.fitToRegion(list.length > 0 && this.el.classList.contains('hidden'));
   }
@@ -770,12 +786,92 @@ export class ConsoleDock {
       const dot = h('span', `${DOT} ${DOT_ST[state]}`);
       const name = h('span', TAB_NAME, entry.name);
       const close = h('span', TAB_X, '✕'); close.title = t('Close');
+      close.dataset['tabClose'] = '';
       close.onclick = (event) => { event.stopPropagation(); this.closeEntry(entry.id); };
       tab.append(icon, dot, name, close);
+      this.makeTabDraggable(tab, entry.id);
       return tab;
     });
     if (list.length >= 2) tabs.push(button(t('All in a new tab'), `⧉ ${t('All in a new tab')} (${list.length})`, () => this.popOutAll(), TAB_ADD));
     this.tabs.replaceChildren(...tabs);
+  }
+
+  // Tabs are reordered by dragging. The order is stored in the shared registry, so every window follows it.
+  private dragging: number | null = null;
+
+  private makeTabDraggable(tab: HTMLElement, id: number): void {
+    tab.draggable = true;
+    tab.addEventListener('dragstart', (event) => {
+      if ((event.target as HTMLElement).closest?.('[data-tab-close]')) { event.preventDefault(); return; }
+      this.dragging = id;
+      event.dataTransfer?.setData('text/plain', String(id));
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+    });
+    tab.addEventListener('dragover', (event) => {
+      if (this.dragging === null || this.dragging === id) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    });
+    tab.addEventListener('drop', (event) => {
+      if (this.dragging === null) return;
+      event.preventDefault();
+      const from = this.dragging;
+      this.dragging = null;
+      this.moveTab(from, id);
+    });
+    tab.addEventListener('dragend', () => { this.dragging = null; });
+  }
+
+  private moveTab(from: number, to: number): void {
+    if (from === to) return;
+    writeConsoles(moveEntry(readConsoles(), from, to));
+    this.sync();
+  }
+
+  /**
+   * Full screen for one VNC session. Only that session's panel is shown; a small bar inside it keeps
+   * the hotkeys (Ctrl+Alt+Del, Alt+Tab, ...), the keyboard, the clipboard and an exit control.
+   */
+  private sessionFullscreen(session: VNCSession): void {
+    if (document.fullscreenElement === session.panel) { void document.exitFullscreen(); return; }
+    if (!session.panel.requestFullscreen) return;
+    void session.panel.requestFullscreen().then(() => {
+      this.showSessionBar(session);
+      session.layout();
+    }).catch(() => undefined);
+  }
+
+  private showSessionBar(session: VNCSession): void {
+    session.panel.querySelector('[data-vnc-fs]')?.remove();
+    const bar = h('div', VNC_FS_BAR);
+    bar.dataset['vncFs'] = '';
+    const combo = (label: string, key: keyof typeof VNC_COMBOS) => {
+      const element = button(t('Send Ctrl+Alt+Del to VM'), label, () => session.view.sendCombo(VNC_COMBOS[key] ?? []));
+      element.onmousedown = (event) => event.preventDefault();
+      return element;
+    };
+    const keyboard = button(t('Virtual keyboard (Ctrl+Alt+K)'), '⌨', () => session.view.toggleKbd(), session.view.kbd ? BAR_ON : '');
+    keyboard.onmousedown = (event) => event.preventDefault();
+    const items: HTMLElement[] = [
+      combo('Ctrl+Alt+Del', 'ctrlAltDel'), combo('Alt+Tab', 'altTab'), combo('Ctrl+Esc', 'ctrlEsc'), combo('Alt+F4', 'altF4'),
+      keyboard,
+    ];
+    if (this.clipboardAllowed(session)) {
+      const clipboard = button(t('VNC clipboard'), '📋', () => session.view.toggleClip(), session.view.clip ? BAR_ON : '');
+      clipboard.onmousedown = (event) => event.preventDefault();
+      items.push(clipboard);
+    }
+    items.push(button(t('Exit full screen'), '⤡', () => { void document.exitFullscreen(); }));
+    bar.append(...items);
+    session.panel.append(bar);
+    const onChange = () => {
+      if (document.fullscreenElement === session.panel) return;
+      bar.remove();
+      document.removeEventListener('fullscreenchange', onChange);
+      session.layout();
+      this.renderBar();
+    };
+    document.addEventListener('fullscreenchange', onChange);
   }
 
   renderBar(): void {
@@ -796,7 +892,7 @@ export class ConsoleDock {
         : null;
       this.bar.replaceChildren(
         button(t('Font')+' -', 'A−', () => this.zoom(-1)), button(t('Font')+' +', 'A+', () => this.zoom(1)),
-        h('span', ZOOM, `${this.font}px`),
+        h('span', ZOOM, `${session.view.currentFont}px`),
         keyboard, ...(clipboard ? [clipboard] : []), h('span', 'flex-1'), status,
       );
       return;
@@ -812,6 +908,7 @@ export class ConsoleDock {
       return element;
     };
     this.bar.replaceChildren(
+      button(t('Full screen (session)'), '⛶', () => this.sessionFullscreen(vncSession!)),
       mode('fit', 'Fit'), button('50%', '50%', () => vnc.setZoom(0.5)), button('75%', '75%', () => vnc.setZoom(0.75)),
       mode('actual', '100%'), button(t('Zoom out'), '−', () => vnc.stepZoom(-1)), h('span', ZOOM, `${Math.round(vnc.scale * 100)}%`),
       button(t('Zoom in'), '+', () => vnc.stepZoom(1)), mode('auto', 'Auto'), ...(vncSession ? [vncSession.qualityHost] : []), combo('Ctrl+Alt+Del', 'ctrlAltDel'), combo('Alt+Tab', 'altTab'),
@@ -924,14 +1021,77 @@ export function closeAllConsoleSessions(): void {
   dock?.closeAll();
 }
 
+const BUS_CHANNEL = 'netrave-console-terminals';
+const PAGE_SWEEP_MS = 10_000;
+interface OpenPayload { device: ConsoleDevice; kind?: 'serial' | 'vnc' | undefined }
+let bus: DockBus<OpenPayload> | null = null;
+
+// The window's terminal answers other windows' open requests only once it exists here (setMode).
+function ensureBus(): DockBus<OpenPayload> | null {
+  if (!bus) {
+    const channel = createBrowserChannel(BUS_CHANNEL);
+    if (!channel) return null;
+    const created = new DockBus<OpenPayload>(channel, WINDOW_ID, null, (payload) => openFromPeer(payload));
+    bus = created;
+    created.onPageChange((open) => dock?.setPageOpen(open));
+    created.onWindowGone((owner) => dock?.releaseOwner(owner));
+    created.onRaise(() => dock?.raise());
+    window.setInterval(() => created.heartbeat(), PAGE_HEARTBEAT_MS);
+    window.setInterval(() => created.sweep(), PAGE_SWEEP_MS);
+    window.addEventListener('pagehide', () => created.bye());
+    // Windows that are already open announce their modes, so this window knows about application tabs.
+    void created.query();
+  }
+  return bus;
+}
+
+// The sender has already decided that this window takes the machine: force the ownership, otherwise a
+// console still owned by another window (a floating one) would stay there and the tab would show nothing.
+function openFromPeer(payload: OpenPayload): void {
+  getDock().open(payload.device, true, payload.kind);
+  window.focus();
+}
+
+/**
+ * One terminal instance at a time: if a live terminal exists in another window, the machine is opened
+ * there (an application tab is preferred, then a floating window). Returns true when it was routed.
+ * A floating terminal in this window is used before a floating one elsewhere.
+ */
+export async function routeOpen(device: ConsoleDevice, kind?: 'serial' | 'vnc' | undefined): Promise<boolean> {
+  const channel = ensureBus();
+  if (!channel) return false;
+  const peer = await channel.findPeer();
+  if (!peer) return false;
+  if (dock && peer.mode === 'float') return false;
+  channel.send(peer, { device, kind });
+  return true;
+}
+
+/**
+ * The sidebar "Console" button without a selected machine: shows the active terminal of another window
+ * (an application tab first, then a floating window). Returns false when no other terminal is alive.
+ */
+export async function routeRaise(): Promise<boolean> {
+  const channel = ensureBus();
+  if (!channel) return false;
+  const peer = await channel.findPeer();
+  if (!peer) return false;
+  channel.raise(peer);
+  return true;
+}
+
 export function getDock(): ConsoleDock {
-  if (!dock) dock = new ConsoleDock(false);
+  if (!dock) {
+    dock = new ConsoleDock(false);
+    ensureBus()?.setMode('float');
+  }
   return dock;
 }
 
 export function mountConsoleDock(page: boolean): ConsoleDock {
   dock?.closeAll();
   dock = new ConsoleDock(page);
+  ensureBus()?.setMode(page ? 'page' : 'float');
   return dock;
 }
 

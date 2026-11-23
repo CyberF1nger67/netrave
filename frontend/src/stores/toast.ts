@@ -1,4 +1,9 @@
 import { create } from 'zustand';
+import { useNotificationsStore } from './notifications';
+import { translateMessage } from '../i18n';
+
+// At most this many popups are on screen; older ones leave the screen (errors stay in the menu).
+const MAX_POPUPS = 5;
 
 type ToastLevel = 'info' | 'success' | 'warning' | 'error';
 
@@ -18,9 +23,12 @@ let nextId = 1;
 
 export const useToastStore = create<ToastState>((set, get) => ({
   items: [],
-  push: (message, level = 'info') => {
+  push: (text, level = 'info') => {
+    const message = translateMessage(text);
     const id = nextId++;
-    set({ items: [...get().items, { id, level, message }] });
+    set({ items: [...get().items, { id, level, message }].slice(-MAX_POPUPS) });
+    // Errors and warnings also go to the notifications menu, so they can be read later.
+    if (level === 'error' || level === 'warning') useNotificationsStore.getState().addLocal(level, message);
     window.setTimeout(() => get().dismiss(id), level === 'error' ? 8000 : 5000);
   },
   dismiss: (id) => set({ items: get().items.filter((item) => item.id !== id) }),

@@ -22,7 +22,7 @@ const MAX_CUSTOM = 30;
  */
 let themeCatalog: ThemeCatalog = { standard: [], presets: [] };
 
-export function setThemeCatalog(catalog: ThemeCatalog): void {
+function setThemeCatalog(catalog: ThemeCatalog): void {
   themeCatalog = {
     standard: Array.isArray(catalog.standard) ? catalog.standard : [],
     presets: Array.isArray(catalog.presets) ? catalog.presets : [],
@@ -53,8 +53,13 @@ export function themeFromId(id: string, state: ThemeState): ResolvedTheme {
     return { id, name: standard.name, base: standard.base, colors: standard.colors ?? null, kind: 'standard', sw: standard.sw };
   }
   if (id.startsWith('preset:')) {
-    const preset = presetTheme(id.slice(7));
-    if (preset?.colors) return { id, name: preset.name, base: preset.base, colors: preset.colors, kind: 'preset', sw: preset.sw };
+    const presetId = id.slice(7);
+    const preset = presetTheme(presetId);
+    const override = state.presets?.[presetId];
+    if (preset && !state.hidden?.includes(presetId)) {
+      if (override) return { id, name: override.name, base: override.base, colors: override.colors, kind: 'preset', sw: preset.sw };
+      if (preset.colors) return { id, name: preset.name, base: preset.base, colors: preset.colors, kind: 'preset', sw: preset.sw };
+    }
   }
   if (id.startsWith('custom:')) {
     const custom = state.custom.find((item) => `custom:${item.id}` === id);
@@ -113,6 +118,8 @@ interface ThemeStore {
   pick: (id: string) => Promise<string | null>;
   saveCustom: (editId: string | null, name: string, colors: ThemeColors) => Promise<string | null>;
   deleteCustom: (customId: string) => Promise<string | null>;
+  savePreset: (presetId: string, name: string, colors: ThemeColors) => Promise<string | null>;
+  deletePreset: (presetId: string) => Promise<string | null>;
   setStandard: (base: 'dark' | 'light') => Promise<void>;
 }
 
@@ -188,7 +195,7 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
       id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
       list.push({ id, name, base: baseOf(colors), colors });
     }
-    const state: ThemeState = { active: `custom:${id}`, custom: list };
+    const state: ThemeState = { active: `custom:${id}`, custom: list, presets: current.presets ?? {}, hidden: current.hidden ?? [] };
     set({ state });
     const resolved = themeFromId(state.active, state);
     applyTheme(resolved.base, resolved.colors);
@@ -205,6 +212,48 @@ export const useThemeStore = create<ThemeStore>((set, get) => ({
     const state: ThemeState = {
       active: current.active === `custom:${customId}` ? 'dark' : current.active,
       custom: current.custom.filter((item) => item.id !== customId),
+      presets: current.presets ?? {},
+      hidden: current.hidden ?? [],
+    };
+    set({ state });
+    const resolved = themeFromId(state.active, state);
+    applyTheme(resolved.base, resolved.colors);
+    try {
+      const response = await authApi.putTheme(state);
+      if (response.theme) set({ state: response.theme });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  },
+  savePreset: async (presetId, name, colors) => {
+    const current = get().state;
+    const state: ThemeState = {
+      ...current,
+      active: `preset:${presetId}`,
+      presets: { ...(current.presets ?? {}), [presetId]: { name, base: baseOf(colors), colors } },
+      hidden: (current.hidden ?? []).filter((item) => item !== presetId),
+    };
+    set({ state });
+    const resolved = themeFromId(state.active, state);
+    applyTheme(resolved.base, resolved.colors);
+    try {
+      const response = await authApi.putTheme(state);
+      if (response.theme) set({ state: response.theme });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  },
+  deletePreset: async (presetId) => {
+    const current = get().state;
+    const presets = { ...(current.presets ?? {}) };
+    delete presets[presetId];
+    const state: ThemeState = {
+      active: current.active === `preset:${presetId}` ? 'dark' : current.active,
+      custom: current.custom,
+      presets,
+      hidden: [...(current.hidden ?? []).filter((item) => item !== presetId), presetId],
     };
     set({ state });
     const resolved = themeFromId(state.active, state);
@@ -229,9 +278,13 @@ export function listThemes(state: ThemeState): ResolvedTheme[] {
   const standard: ResolvedTheme[] = themeCatalog.standard.map((item) => ({
     id: item.id, name: translate(item.name), base: item.base, colors: item.colors ?? null, kind: 'standard', sw: item.sw,
   }));
-  const presets: ResolvedTheme[] = themeCatalog.presets.map((item) => ({
-    id: `preset:${item.id}`, name: translate(item.name), base: item.base, colors: item.colors ?? null, kind: 'preset', sw: item.sw,
-  }));
+  const hidden = new Set(state.hidden ?? []);
+  const presets: ResolvedTheme[] = themeCatalog.presets.filter((item) => !hidden.has(item.id)).map((item) => {
+    const override = state.presets?.[item.id];
+    return override
+      ? { id: `preset:${item.id}`, name: override.name, base: override.base, colors: override.colors, kind: 'preset', sw: item.sw }
+      : { id: `preset:${item.id}`, name: translate(item.name), base: item.base, colors: item.colors ?? null, kind: 'preset', sw: item.sw };
+  });
   const custom: ResolvedTheme[] = state.custom.map((item: CustomTheme) => ({
     id: `custom:${item.id}`, name: item.name, base: item.base, colors: item.colors, kind: 'custom', cid: item.id,
   }));

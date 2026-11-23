@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { Device, Network } from '../../types/api';
 import { fitPoints, MIN_ZOOM } from './viewFit';
 
-const dev = (id: number, x: number, y: number) => ({ id, x, y }) as Device;
-const net = (id: number, x: number, y: number) => ({ id, x, y }) as Network;
+const dev = (id: number, x: number, y: number) => ({ id, x, y }) as unknown as Device;
+const net = (id: number, x: number, y: number) => ({ id, x, y }) as unknown as Network;
 
 /** Screen position of a world point under a view. */
 const toScreen = (view: { x: number; y: number; k: number }, x: number, y: number) => ({ sx: view.x + x * view.k, sy: view.y + y * view.k });

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"netrave/internal/httpx"
 	"netrave/internal/instances"
 	"netrave/internal/labfile"
+	"netrave/internal/msgs"
 	"netrave/internal/notify"
 	"netrave/internal/qemu"
 )
@@ -41,19 +43,21 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /api/devices/{id}/clone", user(h.clone))
 	mux.Handle("POST /api/devices/{id}/commit", user(h.commit))
 	mux.Handle("GET /api/devices/{id}/log", user(h.log))
-	mux.Handle("GET /api/devices/{id}/snapshots", user(h.listSnapshots))
-	mux.Handle("POST /api/devices/{id}/snapshots", user(h.createSnapshot))
-	mux.Handle("POST /api/snapshots/{id}/restore", user(h.restoreSnapshot))
-	mux.Handle("DELETE /api/snapshots/{id}", user(h.deleteSnapshot))
-	mux.Handle("GET /api/labs/{id}/stats", user(h.stats))
-	mux.Handle("GET /api/labs/{id}/status", user(h.status))
-	mux.Handle("POST /api/labs/{id}/start-all", user(h.startAll))
-	mux.Handle("POST /api/labs/{id}/stop-all", user(h.stopAll))
+	mux.Handle("GET /api/labs/{name}/stats", user(h.stats))
+	mux.Handle("GET /api/labs/{name}/status", user(h.status))
+	mux.Handle("POST /api/labs/{name}/start-all", user(h.startAll))
+	mux.Handle("POST /api/labs/{name}/stop-all", user(h.stopAll))
 }
 
 func (h *Handler) audit(r *http.Request, action, detail string) {
 	if ss := auth.FromContext(r.Context()); ss != nil {
 		h.DB.Audit(ss.User.ID, ss.User.Username, action, detail, auth.ClientIP(r))
+	}
+}
+
+func (h *Handler) auditKey(r *http.Request, action, key string, params map[string]string) {
+	if ss := auth.FromContext(r.Context()); ss != nil {
+		h.DB.AuditKey(ss.User.ID, ss.User.Username, action, key, params, nil, auth.ClientIP(r))
 	}
 }
 
@@ -70,75 +74,75 @@ func fail(w http.ResponseWriter, err error) {
 
 // allow checks the user's need permission on the lab.
 // Without view access the lab is hidden (404 with notFound text), without the required permission - 403.
-func (h *Handler) allow(w http.ResponseWriter, ss *auth.Session, labID int64, need, notFound string) bool {
-	perms, err := access.Perms(h.DB, labID, ss.User.ID, ss.User.Role == "admin")
+func (h *Handler) allow(w http.ResponseWriter, ss *auth.Session, labName string, need, notFound string) bool {
+	perms, err := access.Perms(h.DB, labName, ss.User.ID, ss.User.Role == "admin")
 	if err == sql.ErrNoRows || (err == nil && !perms[access.LabView]) {
 		httpx.Err(w, http.StatusNotFound, notFound)
 		return false
 	}
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return false
 	}
 	if !perms[need] {
-		httpx.Err(w, http.StatusForbidden, "нет права: "+access.Title(need))
+		httpx.ErrKey(w, http.StatusForbidden, "No permission: {permission_key}", map[string]string{"permission_key": access.Title(need)})
 		return false
 	}
 	return true
 }
 
 // device authorizes an instance machine rid: instance owner or administrator, then lab permission.
-func (h *Handler) device(w http.ResponseWriter, r *http.Request, need string) (rid, labID int64, name string, ok bool) {
+func (h *Handler) device(w http.ResponseWriter, r *http.Request, need string) (rid int64, labName, name string, ok bool) {
 	ss := auth.FromContext(r.Context())
 	rid, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	inf, err := instances.Device(h.DB, rid)
 	if err != nil || !instances.CanUse(inf.OwnerID, ss.User.ID, ss.User.Role == "admin") {
-		httpx.Err(w, http.StatusNotFound, "устройство не найдено")
+		httpx.Err(w, http.StatusNotFound, "Device not found")
 		return
 	}
-	if !h.allow(w, ss, inf.LabID, need, "устройство не найдено") {
+	if !h.allow(w, ss, inf.LabID, need, "Device not found") {
 		return
 	}
 	return rid, inf.LabID, inf.Name, true
 }
 
 // lab authorizes the lab for operations on all instance machines.
-func (h *Handler) lab(w http.ResponseWriter, r *http.Request, need string) (int64, bool) {
+func (h *Handler) lab(w http.ResponseWriter, r *http.Request, need string) (string, bool) {
 	ss := auth.FromContext(r.Context())
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		httpx.Err(w, http.StatusNotFound, "лаборатория не найдена")
-		return 0, false
+	name := r.PathValue("name")
+	if name == "" {
+		httpx.Err(w, http.StatusNotFound, "Laboratory not found")
+		return "", false
 	}
-	if !h.allow(w, ss, id, need, "лаборатория не найдена") {
-		return 0, false
+	if !h.allow(w, ss, name, need, "Laboratory not found") {
+		return "", false
 	}
-	return id, true
+	return name, true
 }
 
 // instanceParam returns the instance for lab operations: ?instance=N or own.
-func (h *Handler) instanceParam(w http.ResponseWriter, r *http.Request, labID int64) (int64, bool) {
+func (h *Handler) instanceParam(w http.ResponseWriter, r *http.Request, labName string) (int64, bool) {
 	ss := auth.FromContext(r.Context())
 	if q := r.URL.Query().Get("instance"); q != "" {
 		iid, err := strconv.ParseInt(q, 10, 64)
 		if err != nil {
-			httpx.Err(w, http.StatusBadRequest, "некорректный экземпляр")
+			httpx.Err(w, http.StatusBadRequest, "Invalid instance")
 			return 0, false
 		}
 		lid, owner, err := instances.Owner(h.DB, iid)
-		if err != nil || lid != labID || !instances.CanUse(owner, ss.User.ID, ss.User.Role == "admin") {
-			httpx.Err(w, http.StatusNotFound, "экземпляр не найден")
+		if err != nil || lid != labName || !instances.CanUse(owner, ss.User.ID, ss.User.Role == "admin") {
+			httpx.Err(w, http.StatusNotFound, "Instance not found")
 			return 0, false
 		}
 		return iid, true
 	}
-	iid, err := instances.Ensure(h.DB, labID, ss.User.ID)
+	iid, err := instances.Ensure(h.DB, labName, ss.User.ID)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return 0, false
 	}
 	return iid, true
@@ -158,12 +162,12 @@ func actNeed(act string) string {
 }
 
 func (h *Handler) action(w http.ResponseWriter, r *http.Request, act string) {
-	rid, labID, name, ok := h.device(w, r, actNeed(act))
+	rid, labName, name, ok := h.device(w, r, actNeed(act))
 	if !ok {
 		return
 	}
 	if act == "start" || act == "restart" || act == "resume" {
-		if _, ok := h.allowStart(w, r, labID); !ok {
+		if _, ok := h.allowStart(w, r, labName); !ok {
 			return
 		}
 	}
@@ -188,12 +192,12 @@ func (h *Handler) action(w http.ResponseWriter, r *http.Request, act string) {
 	}
 	h.audit(r, "device_"+act, name)
 	lvl, title := actionEvent(act, r.URL.Query().Get("force") == "1")
-	h.notifyMachine(r, rid, lvl, title, name)
-	h.noteAdmin(r, labID, "машина «"+name+"»: "+act)
+	h.notifyMachine(r, rid, lvl, title, name, notify.P("action", act))
+	h.noteAdmin(r, labName, "Machine «{name}»: {action}", map[string]string{"name": name, "action": act})
 	httpx.JSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 
-// commit performs the "Snapshots" menu mode: Snapshot, New Image or Original Image (see qemu.Commit).
+// commit saves a machine as a new image or overwrites the original image (see qemu.Commit).
 func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	var in struct {
@@ -205,21 +209,21 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch in.Mode {
-	case qemu.CommitSnapshot, qemu.CommitImage, qemu.CommitOriginal:
+	case qemu.CommitImage, qemu.CommitOriginal:
 	default:
-		httpx.Err(w, http.StatusBadRequest, "неизвестный режим фиксации")
+		httpx.Err(w, http.StatusBadRequest, "Unknown commit mode")
 		return
 	}
-	rid, _, devName, ok := h.device(w, r, access.MachSnapshot)
+	rid, _, devName, ok := h.device(w, r, access.MachSave)
 	if !ok {
 		return
 	}
 	if !hasImagesPerm(ss) {
-		httpx.Err(w, http.StatusForbidden, "для работы с образами нужно право «Образы»")
+		httpx.Err(w, http.StatusForbidden, "Working with images requires the «Images» permission")
 		return
 	}
 	if in.Mode == qemu.CommitOriginal && ss.User.Role != "admin" {
-		httpx.Err(w, http.StatusForbidden, "перезаписать исходный образ может только администратор")
+		httpx.Err(w, http.StatusForbidden, "Only an administrator can overwrite the original image")
 		return
 	}
 	title := strings.TrimSpace(in.Name)
@@ -229,7 +233,7 @@ func (h *Handler) commit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.audit(r, "device_commit", devName+": "+in.Mode+" "+title)
-	h.notifyMachine(r, rid, notify.Success, "Образ сохранён", devName+": "+in.Mode)
+	h.notifyMachine(r, rid, notify.Success, "Image saved", "{device}: {mode}", notify.P("device", devName, "mode", in.Mode))
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "image_id": imgID})
 }
 
@@ -241,23 +245,24 @@ func hasImagesPerm(ss *auth.Session) bool {
 // clone creates a copy of a topology machine. In the instance, the copy gets the cloned machine's settings and disks;
 // in other instances a row with default settings appears.
 func (h *Handler) clone(w http.ResponseWriter, r *http.Request) {
-	rid, labID, name, ok := h.device(w, r, access.MachClone)
+	rid, labName, name, ok := h.device(w, r, access.MachClone)
 	if !ok {
 		return
 	}
 	if !h.M.IsStopped(rid) {
-		httpx.Err(w, http.StatusConflict, "клонировать можно только остановленное устройство")
+		httpx.Err(w, http.StatusConflict, "Only a stopped device can be cloned")
 		return
 	}
-	var devID, instID int64
+	var devID string
+	var instID int64
 	if h.DB.QueryRow(`SELECT device_id, instance_id FROM instance_devices WHERE id=?`, rid).Scan(&devID, &instID) != nil {
-		httpx.Err(w, http.StatusNotFound, "устройство не найдено")
+		httpx.Err(w, http.StatusNotFound, "Device not found")
 		return
 	}
 	names := map[string]bool{}
-	fl, ok := h.DB.Labs.Lab(labID)
+	fl, ok := h.DB.Labs.Lab(labName)
 	if !ok {
-		httpx.Err(w, http.StatusNotFound, "лаборатория не найдена")
+		httpx.Err(w, http.StatusNotFound, "Laboratory not found")
 		return
 	}
 	for _, d := range fl.Devices {
@@ -277,55 +282,55 @@ func (h *Handler) clone(w http.ResponseWriter, r *http.Request) {
 	// The copy gets the cloned instance's disk (not the default disk, which may not have been chosen):
 	// this way all participants get the same machine with a disk, and the copy starts.
 	// The copy's disk is the cloned instance's disk (not the default disk, which may not have been chosen).
-	var srcImage sql.NullInt64
+	var srcImage sql.NullString
 	_ = h.DB.QueryRow(`SELECT image_id FROM instance_devices WHERE id=?`, rid).Scan(&srcImage)
-	src, _, ok := h.DB.Labs.Device(devID)
+	src, _, ok := h.DB.Labs.Device(labName, devID)
 	if !ok {
-		httpx.Err(w, http.StatusNotFound, "устройство не найдено")
+		httpx.Err(w, http.StatusNotFound, "Device not found")
 		return
 	}
 	cp := src
-	cp.ID = h.DB.Labs.NewID()
 	cp.Name = newName
 	cp.X, cp.Y = src.X+40, src.Y+40
-	cp.ImageID = 0
+	cp.ImageID = ""
 	if srcImage.Valid {
-		cp.ImageID = srcImage.Int64
+		cp.ImageID = srcImage.String
 	}
-	if _, err := h.DB.Labs.Update(labID, func(l *labfile.Lab) error {
+	if _, err := h.DB.Labs.Update(labName, func(l *labfile.Lab) error {
 		l.Devices = append(l.Devices, cp)
 		l.UpdatedAt = time.Now().Unix()
 		return nil
 	}); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
-	newDev := cp.ID
-	if err := instances.SyncLab(h.DB, labID); err != nil {
-		removeDevice(h.DB, labID, newDev)
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+	newDev := cp.Name
+	if err := instances.SyncLab(h.DB, labName); err != nil {
+		removeDevice(h.DB, labName, newDev)
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	var newRID int64
 	if h.DB.QueryRow(`SELECT id FROM instance_devices WHERE instance_id=? AND device_id=?`, instID, newDev).Scan(&newRID) != nil {
-		removeDevice(h.DB, labID, newDev)
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		removeDevice(h.DB, labName, newDev)
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	// copy settings come from the cloned machine of this instance
 	_, _ = h.DB.Exec(`UPDATE instance_devices SET image_id=s.image_id, image_own=1, machine=s.machine, cpu=s.cpu, ram_mb=s.ram_mb, nics=s.nics,
 		nic_model=s.nic_model, iface_type=s.iface_type, iface_start=s.iface_start, disk_bus=s.disk_bus, bios=s.bios, console=s.console, extra_args=s.extra_args
 		FROM instance_devices s WHERE instance_devices.id=? AND s.id=?`, newRID, rid)
-	if err := h.M.CloneFiles(labID, rid, newRID); err != nil {
-		removeDevice(h.DB, labID, newDev)
-		h.M.RemoveFiles(labID, newRID)
+	if err := h.M.CloneFiles(rid, newRID); err != nil {
+		// The machine files are found by the device row: they are removed before the row.
+		h.M.RemoveFiles(instID, newRID)
+		removeDevice(h.DB, labName, newDev)
 		httpx.Err(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	h.audit(r, "device_clone", name)
-	h.notifyMachine(r, rid, notify.Success, "Машина клонирована", name)
+	h.notifyMachine(r, rid, notify.Success, "Machine cloned", name)
 	var out struct {
-		ID   int64   `json:"id"`
+		ID   string  `json:"id"`
 		RID  int64   `json:"rid"`
 		Name string  `json:"name"`
 		X    float64 `json:"x"`
@@ -348,100 +353,6 @@ func (h *Handler) log(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(s))
-}
-
-// ---------- snapshots ----------
-
-func (h *Handler) listSnapshots(w http.ResponseWriter, r *http.Request) {
-	rid, _, _, ok := h.device(w, r, access.LabView)
-	if !ok {
-		return
-	}
-	list, err := h.M.ListSnapshots(rid)
-	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
-		return
-	}
-	httpx.JSON(w, http.StatusOK, list)
-}
-
-func (h *Handler) createSnapshot(w http.ResponseWriter, r *http.Request) {
-	rid, _, name, ok := h.device(w, r, access.MachSnapshot)
-	if !ok {
-		return
-	}
-	var in struct {
-		Name string `json:"name"`
-	}
-	if !httpx.Decode(w, r, &in, 1<<20) {
-		return
-	}
-	if err := h.M.CreateSnapshot(rid, strings.TrimSpace(in.Name)); err != nil {
-		fail(w, err)
-		return
-	}
-	h.audit(r, "snapshot_create", name+": "+in.Name)
-	h.notifyMachine(r, rid, notify.Success, "Снимок создан", name+": "+in.Name)
-	httpx.JSON(w, http.StatusCreated, map[string]bool{"ok": true})
-}
-
-// snapshotAccess checks access to a snapshot via its instance machine.
-func (h *Handler) snapshotAccess(w http.ResponseWriter, r *http.Request, need string) (int64, bool) {
-	ss := auth.FromContext(r.Context())
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
-		return 0, false
-	}
-	sn, ok := h.DB.Catalog.Snapshot(id)
-	if !ok {
-		httpx.Err(w, http.StatusNotFound, "снимок не найден")
-		return 0, false
-	}
-	devID := sn.DeviceID
-	var owner int64
-	if h.DB.QueryRow(`SELECT li.user_id FROM instance_devices r
-		JOIN lab_instances li ON li.id=r.instance_id WHERE r.id=?`, devID).Scan(&owner) != nil {
-		httpx.Err(w, http.StatusNotFound, "снимок не найден")
-		return 0, false
-	}
-	_, labID, ok := h.DB.Labs.Device(devID)
-	if !ok || !instances.CanUse(owner, ss.User.ID, ss.User.Role == "admin") {
-		httpx.Err(w, http.StatusNotFound, "снимок не найден")
-		return 0, false
-	}
-	if !h.allow(w, ss, labID, need, "снимок не найден") {
-		return 0, false
-	}
-	return id, true
-}
-
-func (h *Handler) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.snapshotAccess(w, r, access.MachSnapshot)
-	if !ok {
-		return
-	}
-	if err := h.M.RestoreSnapshot(id); err != nil {
-		fail(w, err)
-		return
-	}
-	h.audit(r, "snapshot_restore", strconv.FormatInt(id, 10))
-	if sn, ok := h.DB.Catalog.Snapshot(id); ok {
-		h.notifyMachine(r, sn.DeviceID, notify.Success, "Снимок восстановлен", sn.Name)
-	}
-	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-func (h *Handler) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.snapshotAccess(w, r, access.MachSnapshot)
-	if !ok {
-		return
-	}
-	if err := h.M.DeleteSnapshot(id); err != nil {
-		fail(w, err)
-		return
-	}
-	httpx.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // ---------- whole lab (single instance) ----------
@@ -484,11 +395,11 @@ func (h *Handler) deviceIDsInStates(instID int64, states ...string) []int64 {
 }
 
 func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
-	labID, ok := h.lab(w, r, access.LabView)
+	labName, ok := h.lab(w, r, access.LabView)
 	if !ok {
 		return
 	}
-	iid, ok := h.instanceParam(w, r, labID)
+	iid, ok := h.instanceParam(w, r, labName)
 	if !ok {
 		return
 	}
@@ -498,23 +409,23 @@ func (h *Handler) stats(w http.ResponseWriter, r *http.Request) {
 
 // startAll starts the instance machines one by one (the memory check sees the real picture).
 func (h *Handler) startAll(w http.ResponseWriter, r *http.Request) {
-	labID, ok := h.lab(w, r, access.MachStart)
+	labName, ok := h.lab(w, r, access.MachStart)
 	if !ok {
 		return
 	}
-	iid, ok := h.instanceParam(w, r, labID)
+	iid, ok := h.instanceParam(w, r, labName)
 	if !ok {
 		return
 	}
-	if _, ok := h.allowStart(w, r, labID); !ok {
+	if _, ok := h.allowStart(w, r, labName); !ok {
 		return
 	}
 	ids := h.deviceIDsInStates(iid, "stopped", "error")
 	if len(ids) == 0 {
-		httpx.Err(w, http.StatusBadRequest, "нет машин для запуска в этом экземпляре")
+		httpx.Err(w, http.StatusBadRequest, "No machines to start in this instance")
 		return
 	}
-	h.audit(r, "lab_start_all", strconv.FormatInt(labID, 10)+" экземпляр "+strconv.FormatInt(iid, 10))
+	h.auditKey(r, "lab_start_all", "Laboratory {lab_id}, instance {instance}", map[string]string{"lab_id": labName, "instance": strconv.FormatInt(iid, 10)})
 	go func() {
 		for _, id := range ids {
 			if err := h.M.Start(id); err == nil {
@@ -526,16 +437,16 @@ func (h *Handler) startAll(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) stopAll(w http.ResponseWriter, r *http.Request) {
-	labID, ok := h.lab(w, r, access.MachStop)
+	labName, ok := h.lab(w, r, access.MachStop)
 	if !ok {
 		return
 	}
-	iid, ok := h.instanceParam(w, r, labID)
+	iid, ok := h.instanceParam(w, r, labName)
 	if !ok {
 		return
 	}
 	ids := h.deviceIDsInStates(iid, "running", "paused")
-	h.audit(r, "lab_stop_all", strconv.FormatInt(labID, 10)+" экземпляр "+strconv.FormatInt(iid, 10))
+	h.auditKey(r, "lab_stop_all", "Laboratory {lab_id}, instance {instance}", map[string]string{"lab_id": labName, "instance": strconv.FormatInt(iid, 10)})
 	for _, id := range ids {
 		_ = h.M.Stop(id, false)
 	}
@@ -545,29 +456,30 @@ func (h *Handler) stopAll(w http.ResponseWriter, r *http.Request) {
 // allowStart checks the role limit on the number of simultaneously running labs.
 // A start of another lab from the same instance that has already begun is allowed: the number
 // of labs with running machines is counted, not the attempt itself. On refusal it writes 409 and returns false.
-func (h *Handler) allowStart(w http.ResponseWriter, r *http.Request, labID int64) (int64, bool) {
+func (h *Handler) allowStart(w http.ResponseWriter, r *http.Request, labName string) (string, bool) {
 	ss := auth.FromContext(r.Context())
 	if ss.User.Role == "admin" {
-		return labID, true
+		return labName, true
 	}
 	limit, err := access.RunningLabLimit(h.DB, ss.User.ID)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
-		return labID, false
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
+		return labName, false
 	}
 	if limit <= 0 {
-		return labID, true
+		return labName, true
 	}
 	rows, err := h.DB.Query(`SELECT i.lab_id, d.id FROM instance_devices d
 		JOIN lab_instances i ON i.id=d.instance_id
-		WHERE i.user_id=? AND i.lab_id<>?`, ss.User.ID, labID)
+		WHERE i.user_id=? AND i.lab_id<>?`, ss.User.ID, labName)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
-		return labID, false
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
+		return labName, false
 	}
-	activeLabs := map[int64]bool{}
+	activeLabs := map[string]bool{}
 	for rows.Next() {
-		var id, rid int64
+		var id string
+		var rid int64
 		if rows.Scan(&id, &rid) != nil {
 			continue
 		}
@@ -582,20 +494,19 @@ func (h *Handler) allowStart(w http.ResponseWriter, r *http.Request, labID int64
 	rows.Close()
 	running := len(activeLabs)
 	if running >= limit {
-		httpx.Err(w, http.StatusConflict, "достигнут предел роли: одновременно можно запускать не более "+
-			strconv.Itoa(limit)+" лабораторий. Остановите другую лабораторию, чтобы запустить эту")
-		return labID, false
+		httpx.ErrKey(w, http.StatusConflict, "Role limit reached: no more than {limit} laboratories can run at the same time. Stop another laboratory to start this one.", map[string]string{"limit": strconv.Itoa(limit)})
+		return labName, false
 	}
-	return labID, true
+	return labName, true
 }
 
 // noteAdmin writes an administrator action on a machine in another lab to the journal.
-func (h *Handler) noteAdmin(r *http.Request, labID int64, what string) {
+func (h *Handler) noteAdmin(r *http.Request, labName string, key string, params map[string]string) {
 	ss := auth.FromContext(r.Context())
 	if ss == nil || ss.User.Role != "admin" {
 		return
 	}
-	fl, ok := h.DB.Labs.Lab(labID)
+	fl, ok := h.DB.Labs.Lab(labName)
 	if !ok || fl.OwnerID == ss.User.ID {
 		return
 	}
@@ -603,17 +514,18 @@ func (h *Handler) noteAdmin(r *http.Request, labID int64, what string) {
 	if h.DB.QueryRow(`SELECT username FROM users WHERE id=?`, fl.OwnerID).Scan(&owner) != nil {
 		return
 	}
-	h.audit(r, "admin_device_action", what+" (лаборатория пользователя «"+owner+"», id "+strconv.FormatInt(labID, 10)+")")
+	h.auditKey(r, "admin_device_action", "{what_key} (laboratory of user «{owner}», id {lab_id})",
+		msgs.Merge(params, map[string]string{"what_key": key, "owner": owner, "lab_id": labName}))
 }
 
 // notifyMachine reports an action on a machine to the initiator, instance owner and administrators.
-func (h *Handler) notifyMachine(r *http.Request, rid int64, level, title, body string) {
+func (h *Handler) notifyMachine(r *http.Request, rid int64, level, title, body string, params ...map[string]string) {
 	if h.Notify == nil {
 		return
 	}
 	var iid int64
 	_ = h.DB.QueryRow(`SELECT instance_id FROM instance_devices WHERE id=?`, rid).Scan(&iid)
-	labID, owner, err := instances.Owner(h.DB, iid)
+	labName, owner, err := instances.Owner(h.DB, iid)
 	if err != nil {
 		owner = 0
 	}
@@ -621,37 +533,37 @@ func (h *Handler) notifyMachine(r *http.Request, rid int64, level, title, body s
 	if ss := auth.FromContext(r.Context()); ss != nil {
 		actor = ss.User.ID
 	}
-	h.Notify.Activity(actor, owner, level, notify.CatMachine, title, body, "/labs/"+strconv.FormatInt(labID, 10)+"/editor")
+	h.Notify.Activity(actor, owner, level, notify.CatMachine, title, body, "/labs/"+url.PathEscape(labName)+"/editor", params...)
 }
 
 // actionEvent - severity and title of the notification for an action on a machine.
 func actionEvent(act string, force bool) (string, string) {
 	switch act {
 	case "start":
-		return notify.Success, "Машина запущена"
+		return notify.Success, "Machine started"
 	case "stop":
 		if force {
-			return notify.Warning, "Машина остановлена принудительно"
+			return notify.Warning, "Machine force-stopped"
 		}
-		return notify.Info, "Машина остановлена"
+		return notify.Info, "Machine stopped"
 	case "restart":
-		return notify.Info, "Машина перезапущена"
+		return notify.Info, "Machine restarted"
 	case "suspend":
-		return notify.Info, "Машина приостановлена"
+		return notify.Info, "Machine suspended"
 	case "resume":
-		return notify.Success, "Работа машины продолжена"
+		return notify.Success, "Machine resumed"
 	case "wipe":
-		return notify.Info, "Диск машины сброшен"
+		return notify.Info, "Machine disk wiped"
 	}
-	return notify.Info, "Действие над машиной: " + act
+	return notify.Info, "Machine action: {action}"
 }
 
 // removeDevice removes a machine from the lab topology (rollback of a failed clone).
-func removeDevice(db *database.DB, labID, devID int64) {
-	_, _ = db.Labs.Update(labID, func(l *labfile.Lab) error {
+func removeDevice(db *database.DB, labName, devName string) {
+	_, _ = db.Labs.Update(labName, func(l *labfile.Lab) error {
 		out := l.Devices[:0]
 		for _, d := range l.Devices {
-			if d.ID != devID {
+			if d.Name != devName {
 				out = append(out, d)
 			}
 		}

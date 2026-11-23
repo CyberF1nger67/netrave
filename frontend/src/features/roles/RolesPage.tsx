@@ -1,15 +1,15 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { foldersApi, rolesApi } from '../../api/endpoints';
-import type { LabFolder, RbacPermission, RbacRole } from '../../types/api';
+import { rolesApi } from '../../api/endpoints';
+import type { RbacPermission, RbacRole } from '../../types/api';
 import { guard, toast } from '../../stores/toast';
 import { fmtTime } from '../../lib/format';
 import { Modal } from '../../components/ui/Modal';
 import { Spinner } from '../../components/ui/Spinner';
 import { Switch } from '../../components/ui/Switch';
 import { NumberField } from '../../components/ui/NumberField';
-import { folderPath } from '../labs/FolderDialogs';
-import { currentLanguage, t, useLanguageStore } from '../../i18n';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
 
 const primary = 'border-transparent bg-gradient-to-br from-accent to-accent-2 font-semibold text-on-accent shadow-[0_6px_18px_-6px_rgba(99,102,241,.55)] hover:brightness-110';
 const danger = 'text-bad hover:border-bad hover:bg-bad/10';
@@ -20,68 +20,63 @@ const permGrid = 'grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-2';
 const permItem = 'flex items-start gap-2.5 rounded-md px-0.5 py-[5px] text-[13.5px] hover:text-text';
 const roleSection = 'border-t border-line pt-3';
 const roleTitle = 'mb-2 mt-0 text-[13px] font-bold uppercase tracking-[.05em] text-muted';
-const list = 'grid max-h-[190px] grid-cols-1 gap-x-6 gap-y-0.5 overflow-auto rounded-app-sm border border-line bg-bg-2 px-2.5 py-2 sm:grid-cols-2';
 const row2 = 'grid grid-cols-1 items-end gap-2.5 sm:grid-cols-2';
 
-const GROUPS: Array<{ key: string; en: string; ru: string }> = [
-  { key: 'labs', en: 'Laboratories', ru: 'Лаборатории' },
-  { key: 'folders', en: 'Folders', ru: 'Папки' },
-  { key: 'machines', en: 'Virtual machines', ru: 'Виртуальные машины' },
-  { key: 'users', en: 'Users', ru: 'Пользователи' },
-  { key: 'extra', en: 'Additional capabilities', ru: 'Дополнительные возможности' },
+const GROUPS: Array<{ key: string; label: string }> = [
+  { key: 'labs', label: 'Laboratories' },
+  { key: 'folders', label: 'Folders' },
+  { key: 'machines', label: 'Virtual machines' },
+  { key: 'users', label: 'Users' },
+  { key: 'extra', label: 'Additional capabilities' },
 ];
 
-const PERMISSION_LABELS: Record<string, { en: string; ru: string }> = {
-  'laboratories.view': { en: 'View laboratories', ru: 'Просмотр лабораторий' },
-  'laboratories.create': { en: 'Create laboratories', ru: 'Создание лабораторий' },
-  'laboratories.edit': { en: 'Edit laboratories', ru: 'Редактирование лабораторий' },
-  'laboratories.delete': { en: 'Delete laboratories', ru: 'Удаление лабораторий' },
-  'laboratories.copy': { en: 'Copy laboratories', ru: 'Копирование лабораторий' },
-  'laboratories.start_stop': { en: 'Start and stop machines', ru: 'Запуск и остановка машин' },
-  'laboratories.wipe': { en: 'Wipe machines', ru: 'Wipe машин' },
-  'laboratories.topology': { en: 'Manage topology', ru: 'Управление топологией' },
-  'folders.view': { en: 'View assigned folders', ru: 'Просмотр назначенных папок' },
-  'folders.access': { en: 'Access folder contents', ru: 'Доступ к содержимому папок' },
-  'folders.move_labs': { en: 'Move laboratories between folders', ru: 'Перемещение лабораторий между папками' },
-  'folders.manage': { en: 'Manage folders', ru: 'Управление папками' },
-  'machines.start_stop': { en: 'Start and stop', ru: 'Запуск и остановка' },
-  'machines.restart': { en: 'Restart', ru: 'Перезагрузка' },
-  'machines.wipe': { en: 'Wipe', ru: 'Wipe' },
-  'machines.serial': { en: 'Serial console', ru: 'Serial Console' },
-  'machines.vnc': { en: 'VNC console', ru: 'VNC Console' },
-  'machines.clipboard': { en: 'Console clipboard (copy and paste)', ru: 'Буфер обмена в консоли (копирование и вставка)' },
-  'users.view': { en: 'View users', ru: 'Просмотр пользователей' },
-  'users.settings': { en: 'Change user settings', ru: 'Изменение пользовательских настроек' },
-  'users.password': { en: 'Change own password', ru: 'Смена собственного пароля' },
-  'users.manage': { en: 'Manage users', ru: 'Управление пользователями' },
-  'notifications.view': { en: 'View notifications', ru: 'Просмотр уведомлений' },
-  'settings.own': { en: 'Manage own settings', ru: 'Управление собственными настройками' },
-  'admin.access': { en: 'Access administrative sections', ru: 'Доступ к административным разделам' },
+const PERMISSION_LABELS: Record<string, string> = {
+  'laboratories.view': 'View laboratories',
+  'laboratories.create': 'Create laboratories',
+  'laboratories.edit': 'Edit laboratories',
+  'laboratories.delete': 'Delete laboratories',
+  'laboratories.copy': 'Copy laboratories',
+  'laboratories.start_stop': 'Start and stop machines',
+  'laboratories.wipe': 'Wipe machines',
+  'laboratories.topology': 'Manage topology',
+  'folders.view': 'View assigned folders',
+  'folders.access': 'Access folder contents',
+  'folders.move_labs': 'Move laboratories between folders',
+  'folders.manage': 'Manage folders',
+  'machines.start_stop': 'Start and stop',
+  'machines.restart': 'Restart',
+  'machines.wipe': 'Wipe',
+  'machines.serial': 'Serial console',
+  'machines.vnc': 'VNC console',
+  'machines.clipboard': 'Console clipboard (copy and paste)',
+  'users.view': 'View users',
+  'users.settings': 'Change user settings',
+  'users.password': 'Change own password',
+  'users.manage': 'Manage users',
+  'notifications.view': 'View notifications',
+  'settings.own': 'Manage own settings',
+  'admin.access': 'Access administrative sections',
 };
-
-const ru = () => currentLanguage() === 'ru';
 
 function groupTitle(key: string): string {
   const group = GROUPS.find((item) => item.key === key);
-  return group ? (ru() ? group.ru : group.en) : key;
+  return group ? (translateMessage(group.label)) : key;
 }
 
 function permissionTitle(key: string, fallback: string): string {
   const label = PERMISSION_LABELS[key];
-  return label ? (ru() ? label.ru : label.en) : fallback;
+  return label ? (translateMessage(label)) : fallback;
 }
 
-function RoleDialog({ role, catalog, folders, onClose, onSaved }: {
+function RoleDialog({ role, catalog, onClose, onSaved }: {
   role: RbacRole | null;
   catalog: RbacPermission[];
-  folders: LabFolder[];
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [name, setName] = useState(role?.name ?? '');
   const [description, setDescription] = useState(role?.description ?? '');
   const [permissions, setPermissions] = useState<string[]>(role?.permissions ?? []);
-  const [folderIds, setFolderIds] = useState<number[]>(role?.folder_ids ?? []);
   const [saving, setSaving] = useState(false);
   // 0 - no limit: how many labs the role allows to run simultaneously.
   const [maxRunning, setMaxRunning] = useState(role?.max_running_labs ?? 0);
@@ -91,10 +86,6 @@ function RoleDialog({ role, catalog, folders, onClose, onSaved }: {
   const togglePermission = (key: string, checked: boolean) => {
     setPermissions((current) => checked ? [...current, key] : current.filter((item) => item !== key));
   };
-  const toggleFolder = (id: number, checked: boolean) => {
-    setFolderIds((current) => checked ? [...current, id] : current.filter((item) => item !== id));
-  };
-
   const save = async () => {
     const trimmed = name.trim();
     if (!trimmed) { toast.error(t('Enter a name')); return; }
@@ -103,10 +94,10 @@ function RoleDialog({ role, catalog, folders, onClose, onSaved }: {
       if (role && role.system) {
         await rolesApi.update(role.id, { description });
       } else if (role) {
-        await rolesApi.update(role.id, { name: trimmed, description, permissions, folder_ids: folderIds, max_running_labs: maxRunning });
+        await rolesApi.update(role.id, { name: trimmed, description, permissions, max_running_labs: maxRunning });
       } else {
         const created = await rolesApi.create(trimmed, description);
-        await rolesApi.update(created.id, { permissions, folder_ids: folderIds, max_running_labs: maxRunning });
+        await rolesApi.update(created.id, { permissions, max_running_labs: maxRunning });
       }
       toast.success(t('Role saved'));
       onSaved();
@@ -166,16 +157,6 @@ function RoleDialog({ role, catalog, folders, onClose, onSaved }: {
 
         <div className={`${roleSection} ${system ? 'pointer-events-none opacity-50' : ''}`}>
           <h4 className={roleTitle}>{t('Folders')}</h4>
-          <div className={hint}>{t('All role members automatically get access to the selected folders and their subfolders.')}</div>
-          {folders.length ? (
-            <div className={list}>
-              {folders.map((folder) => (
-                <Switch key={folder.id} className={permItem} checked={folderIds.includes(folder.id)}
-                  label={folderPath(folders, folder.id).map((part) => part.name).join(' / ')}
-                  onChange={(checked) => toggleFolder(folder.id, checked)} />
-              ))}
-            </div>
-          ) : <div className="text-muted">{t('There are no folders yet. Create folders in the laboratory list.')}</div>}
         </div>
       </div>
     </Modal>
@@ -188,7 +169,6 @@ export function RolesPage() {
   const [creating, setCreating] = useState(false);
   const roles = useQuery({ queryKey: ['roles'], queryFn: rolesApi.list });
   const catalog = useQuery({ queryKey: ['roles-catalog'], queryFn: rolesApi.catalog, staleTime: 300_000 });
-  const folders = useQuery({ queryKey: ['folders'], queryFn: foldersApi.list });
   useLanguageStore((state) => state.language);
 
   const reload = () => {
@@ -196,8 +176,8 @@ export function RolesPage() {
     void queryClient.invalidateQueries({ queryKey: ['users'] });
   };
 
-  const remove = (role: RbacRole) => {
-    if (!confirm(`${t('Delete role?')} (${role.name})`)) return;
+  const remove = async (role: RbacRole) => {
+    if (!(await askConfirm({ title: `${t('Delete role?')} (${role.name})`, danger: true }))) return;
     void guard(async () => {
       await rolesApi.remove(role.id);
       reload();
@@ -224,7 +204,7 @@ export function RolesPage() {
               // The built-in administrator role is shown as a regular one, but its fields are read-only.
               <tr key={role.id} className={role.system ? 'opacity-70' : undefined}>
                 <td><b>{role.name}</b>{role.system && <span className="ml-2 rounded-full bg-accent-soft px-2 py-[2px] text-[11px] text-accent">{t('Built-in')}</span>}</td>
-                <td className="text-muted">{role.description || '—'}</td>
+                <td className="text-muted">{role.description ? translateMessage(role.description) : '—'}</td>
                 <td>{role.member_count}</td>
                 <td>{role.permissions.length}</td>
                 <td className="text-muted">{role.system ? '—' : fmtTime(role.created_at)}</td>
@@ -241,7 +221,7 @@ export function RolesPage() {
         {roles.data && roles.data.length === 0 && <div className="py-2 text-muted">{t('No roles yet')}</div>}
       </div>
       {(creating || editing) && (
-        <RoleDialog role={editing} catalog={catalog.data ?? []} folders={folders.data ?? []}
+        <RoleDialog role={editing} catalog={catalog.data ?? []}
           onClose={() => { setCreating(false); setEditing(null); }} onSaved={reload} />
       )}
     </>

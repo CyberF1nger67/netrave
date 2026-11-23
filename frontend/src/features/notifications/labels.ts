@@ -1,9 +1,10 @@
 import type { IconName } from '../../components/Icon';
-import { t } from '../../i18n';
+import { t, translateMessage } from '../../i18n';
 import type { NotificationCategory, NotificationItem } from '../../types/api';
 
 export function catLabel(categories: NotificationCategory[], key: string): string {
-  return categories.find((category) => category.key === key)?.label ?? t('System');
+  const label = categories.find((category) => category.key === key)?.label;
+  return label ? translateMessage(label) : t('System');
 }
 
 export function levelIcon(level: NotificationItem['level']): IconName {

@@ -46,10 +46,10 @@ func TestCleanNormalizesPNGAndJPEG(t *testing.T) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if info.Format != "png" || !bytes.HasPrefix(clean, pngSig) {
-			t.Fatalf("%s должен сохраняться как PNG, получено %q", name, info.Format)
+			t.Fatalf("%s must be saved as PNG, got %q", name, info.Format)
 		}
 		if info.Width == 0 || info.Height == 0 || info.FileName() != info.Hash+".png" {
-			t.Fatalf("%s: описание %+v", name, info)
+			t.Fatalf("%s: description %+v", name, info)
 		}
 	}
 }
@@ -68,13 +68,13 @@ func TestCleanSVGKeepsVector(t *testing.T) {
 		t.Fatal(err)
 	}
 	if info.Format != "svg" || info.Width != 64 || info.Height != 48 || !info.Alpha {
-		t.Fatalf("описание SVG: %+v", info)
+		t.Fatalf("SVG description: %+v", info)
 	}
 	if info.FileName() != info.Hash+".svg" || !bytes.Contains(clean, []byte("xmlns=\"http://www.w3.org/2000/svg\"")) {
-		t.Fatalf("очищенный SVG: %s", clean)
+		t.Fatalf("cleaned SVG: %s", clean)
 	}
 	if bytes.Contains(clean, []byte("comment")) || bytes.Contains(clean, []byte("xlink")) {
-		t.Fatalf("комментарии и лишние пространства имён должны исчезнуть: %s", clean)
+		t.Fatalf("comments and extra namespaces must be removed: %s", clean)
 	}
 	// Re-cleaning an already cleaned file must produce the same hash.
 	again, second, err := Clean(clean)
@@ -82,7 +82,7 @@ func TestCleanSVGKeepsVector(t *testing.T) {
 		t.Fatal(err)
 	}
 	if second.Hash != info.Hash || !bytes.Equal(again, clean) {
-		t.Fatal("повторная очистка изменила файл")
+		t.Fatal("repeated cleaning changed file")
 	}
 }
 
@@ -97,20 +97,20 @@ func TestCleanSVGRejectsUnsafeContent(t *testing.T) {
 	}
 	for name, data := range cases {
 		if _, _, err := Clean([]byte(data)); err == nil {
-			t.Fatalf("%s: небезопасный SVG принят", name)
+			t.Fatalf("%s: unsafe SVG accepted", name)
 		}
 	}
 }
 
 func TestCleanRejectsUnknownAndOversizedData(t *testing.T) {
 	if _, _, err := Clean([]byte("not an image")); err == nil {
-		t.Fatal("произвольные байты приняты")
+		t.Fatal("arbitrary bytes accepted")
 	}
 	if _, _, err := Clean(nil); err == nil {
-		t.Fatal("пустой файл принят")
+		t.Fatal("empty file accepted")
 	}
 	if _, _, err := Clean([]byte(`<svg xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32"/></svg>`)); err == nil {
-		t.Fatal("SVG без размеров принят")
+		t.Fatal("SVG without dimensions accepted")
 	}
 }
 
@@ -133,11 +133,11 @@ func TestStoreResolvesPNGAndSVG(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !st.Exists(item.info.Hash) || st.ContentType(item.info.Hash) != item.ct {
-			t.Fatalf("иконка %s не найдена или неверный MIME", item.info.Hash)
+			t.Fatalf("icon %s not found or wrong MIME", item.info.Hash)
 		}
 		data, err := st.Read(item.info.Hash)
 		if err != nil || !bytes.Equal(data, item.data) {
-			t.Fatalf("чтение %s: %v", item.info.Hash, err)
+			t.Fatalf("reading %s: %v", item.info.Hash, err)
 		}
 		if err := st.Touch(item.info.Hash); err != nil {
 			t.Fatalf("touch %s: %v", item.info.Hash, err)
@@ -149,7 +149,7 @@ func TestBundledDefaultSVGsAreSafe(t *testing.T) {
 	dir := filepath.Join("..", "..", "frontend", "public", "img")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		t.Skipf("каталог стандартных иконок недоступен: %v", err)
+		t.Skipf("standard icon directory unavailable: %v", err)
 	}
 	found := 0
 	for _, entry := range entries {
@@ -170,6 +170,6 @@ func TestBundledDefaultSVGsAreSafe(t *testing.T) {
 		}
 	}
 	if found == 0 {
-		t.Fatal("стандартные SVG-иконки не найдены")
+		t.Fatal("standard SVG icons not found")
 	}
 }

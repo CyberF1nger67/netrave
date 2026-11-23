@@ -1,19 +1,31 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { logsApi } from '../../api/endpoints';
 import { can, useAuthStore } from '../../stores/auth';
 import { guard, toast } from '../../stores/toast';
+import type { AuditEntry } from '../../types/api';
 import { fmtTime } from '../../lib/format';
 import { Dropdown } from '../../components/ui/Dropdown';
 import { Switch } from '../../components/ui/Switch';
 import { Spinner } from '../../components/ui/Spinner';
-import { t, useLanguageStore } from '../../i18n';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
 
 const danger = 'text-bad hover:border-bad hover:bg-bad/10';
 const bar = 'mb-3.5 flex flex-wrap items-end gap-2.5 [&>label]:mb-0 [&>input]:max-w-[320px]';
 
 type Period = 'all' | 'hour' | 'day' | 'week' | 'month';
 type Sort = 'new' | 'old';
+
+/** The record text in the interface language: keyed records carry their key and parameters (see database.AuditKey). */
+function recordText(entry: AuditEntry): string {
+  const key = entry.data?.msg_key;
+  if (typeof key !== 'string') return entry.detail;
+  const params: Record<string, string> = {};
+  const raw = entry.data?.msg_params;
+  if (raw && typeof raw === 'object') for (const [name, value] of Object.entries(raw)) params[name] = String(value);
+  return translateMessage(key, params);
+}
 
 /** Readable action group: "lab_export" -> "lab". */
 function actionGroup(action: string): string {
@@ -52,7 +64,7 @@ export function LogsPage() {
       if (periodStart && entry.ts < periodStart) return false;
       if (userFilter && entry.username !== userFilter) return false;
       if (action && actionGroup(entry.action) !== action) return false;
-      if (onlyErrors && !/error|fail|ошиб/i.test(`${entry.action} ${entry.detail}`)) return false;
+      if (onlyErrors && !/error|fail/i.test(`${entry.action} ${entry.detail}`)) return false;
       if (text) {
         const haystack = `${entry.username} ${entry.action} ${entry.detail} ${entry.ip}`.toLowerCase();
         if (!haystack.includes(text.toLowerCase())) return false;
@@ -69,8 +81,8 @@ export function LogsPage() {
   if (query.isLoading) return <Spinner />;
   if (query.error) return <div className="py-2 text-bad">{query.error.message}</div>;
 
-  const clear = () => {
-    if (!confirm(t('All journal entries will be deleted. This is irreversible.'))) return;
+  const clear = async () => {
+    if (!(await askConfirm({ title: t('All journal entries will be deleted. This is irreversible.'), danger: true }))) return;
     void guard(async () => {
       await logsApi.clear();
       toast.success(t('Journal cleared'));
@@ -143,7 +155,7 @@ export function LogsPage() {
               {visible.map((entry) => (
                 <tr key={entry.id}>
                   <td className="whitespace-nowrap text-muted">{fmtTime(entry.ts)}</td><td>{entry.username || '—'}</td>
-                  <td>{entry.action}</td><td>{entry.detail}</td><td className="text-muted">{entry.ip}</td>
+                  <td>{entry.action}</td><td>{recordText(entry)}</td><td className="text-muted">{entry.ip}</td>
                 </tr>
               ))}
             </tbody>

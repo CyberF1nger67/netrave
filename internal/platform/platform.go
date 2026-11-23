@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"netrave/internal/hostarch"
 )
 
 // Family is a package-manager and layout family.
@@ -53,11 +55,21 @@ var adapters = map[string]Adapter{}
 
 func register(adapter Adapter) { adapters[adapter.ID] = adapter }
 
+// qemuSystemPkg returns the package with the QEMU system emulator (or UEFI firmware) of the host
+// architecture: x86_64 hosts get x86 packages, arm64 hosts get aarch64 packages.
+func qemuSystemPkg(x86, arm string) string {
+	if hostarch.QEMUArch() == "aarch64" {
+		return arm
+	}
+	return x86
+}
+
 func init() {
 	debian := func(id, name string) Adapter {
 		return Adapter{ID: id, Name: name, Family: FamilyDebian, PackageManager: "apt-get",
 			Packages: map[string]string{
-				"qemu-system": "qemu-system-x86", "qemu-img": "qemu-utils", "ip": "iproute2",
+				"qemu-system": qemuSystemPkg("qemu-system-x86", "qemu-system-arm"), "uefi": qemuSystemPkg("ovmf", "qemu-efi-aarch64"),
+				"qemu-img": "qemu-utils", "ip": "iproute2",
 				"nft": "nftables", "dnsmasq": "dnsmasq-base",
 			}, InitCandidates: []InitKind{InitSystemd}, ServiceRoot: "/etc/systemd/system"}
 	}
@@ -65,7 +77,8 @@ func init() {
 	register(debian("ubuntu", "Ubuntu"))
 
 	redhatPackages := map[string]string{
-		"qemu-system": "qemu-system-x86", "qemu-img": "qemu-img", "ip": "iproute",
+		"qemu-system": qemuSystemPkg("qemu-system-x86", "qemu-system-aarch64"), "uefi": qemuSystemPkg("edk2-ovmf", "edk2-aarch64"),
+		"qemu-img": "qemu-img", "ip": "iproute",
 		"nft": "nftables", "dnsmasq": "dnsmasq",
 	}
 	register(Adapter{ID: "rhel", Name: "Red Hat Enterprise Linux", Family: FamilyRedHat, PackageManager: "dnf",
@@ -79,19 +92,21 @@ func init() {
 
 	register(Adapter{ID: "void", Name: "Void Linux", Family: FamilyVoid, PackageManager: "xbps-install",
 		Packages: map[string]string{
-			"qemu-system": "qemu-system-x86_64", "qemu-img": "qemu-tools", "ip": "iproute2",
+			"qemu-system": "qemu", "uefi": qemuSystemPkg("edk2-ovmf", "edk2-aarch64"), "qemu-img": "qemu-tools", "ip": "iproute2",
 			"nft": "nftables", "dnsmasq": "dnsmasq",
 		}, InitCandidates: []InitKind{InitRunit, InitOpenRC}, ServiceRoot: "/etc/sv"})
 
 	register(Adapter{ID: "alpine", Name: "Alpine Linux", Family: FamilyAlpine, PackageManager: "apk",
 		Packages: map[string]string{
-			"qemu-system": "qemu-system-x86_64", "qemu-img": "qemu-img", "ip": "iproute2",
+			"qemu-system": qemuSystemPkg("qemu-system-x86_64", "qemu-system-aarch64"), "uefi": qemuSystemPkg("ovmf", "edk2"),
+			"qemu-img": "qemu-img", "ip": "iproute2",
 			"nft": "nftables", "dnsmasq": "dnsmasq",
 		}, InitCandidates: []InitKind{InitOpenRC, InitRunit}, ServiceRoot: "/etc/init.d"})
 
 	arch := Adapter{ID: "arch", Name: "Arch Linux", Family: FamilyArch, PackageManager: "pacman",
 		Packages: map[string]string{
-			"qemu-system": "qemu-system-x86", "qemu-img": "qemu-img", "ip": "iproute2",
+			"qemu-system": qemuSystemPkg("qemu-system-x86", "qemu-system-aarch64"), "uefi": qemuSystemPkg("edk2-ovmf", "edk2-armvirt"),
+			"qemu-img": "qemu-img", "ip": "iproute2",
 			"nft": "nftables", "dnsmasq": "dnsmasq",
 		}, InitCandidates: []InitKind{InitSystemd}, ServiceRoot: "/etc/systemd/system"}
 	register(arch)
@@ -244,7 +259,7 @@ func Detect(initOverride string) (Info, error) {
 			"socket": "/run/netrave/daemon.sock",
 		},
 	}
-	for _, tool := range []string{"qemu-system-x86_64", "qemu-img", "ip", "nft", "dnsmasq"} {
+	for _, tool := range []string{hostarch.QEMUBinary(), "qemu-img", "ip", "nft", "dnsmasq"} {
 		_, err := exec.LookPath(tool)
 		info.Tools[tool] = err == nil
 		if err != nil {

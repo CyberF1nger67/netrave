@@ -4,7 +4,6 @@ package labs
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"runtime"
 	"sort"
@@ -17,6 +16,7 @@ import (
 	"netrave/internal/auth"
 	"netrave/internal/httpx"
 	"netrave/internal/journal"
+	"netrave/internal/msgs"
 	"netrave/internal/notify"
 )
 
@@ -26,7 +26,7 @@ import (
 // which was started and has not been wiped yet. One lab can produce several rows -
 // one per user.
 type RunningLab struct {
-	ID             int64   `json:"id"`          // lab
+	ID             string  `json:"id"`          // lab name
 	Name           string  `json:"name"`        // lab name
 	OwnerID        int64   `json:"owner_id"`    // lab owner
 	Owner          string  `json:"owner"`       // lab owner name
@@ -85,14 +85,6 @@ func pidAlive(pid int) bool {
 // only instances of their own labs (an owner sees all machines of their lab, but manages only their own instance).
 func (h *Handler) runningLabs(ss *auth.Session, q, owner string) ([]RunningLab, error) {
 	admin, uid := ss.User.Role == "admin", ss.User.ID
-	grants, err := access.Grants(h.DB, uid)
-	if err != nil {
-		return nil, err
-	}
-	roleGrants, err := access.RoleLabGrants(h.DB, uid)
-	if err != nil {
-		return nil, err
-	}
 	// Lab data (name, owner, access) is in lab files, so SQL selects only
 	// instances, while filters and permissions are applied here. Each instance has its own wipe time (journal).
 	// Mutable machine state is not stored in the database: counters are built from QEMU manager data.
@@ -108,7 +100,7 @@ func (h *Handler) runningLabs(ss *auth.Session, q, owner string) ([]RunningLab, 
 	}
 	type instRowData struct {
 		rl         RunningLab
-		labID      int64
+		labID      string
 		instUserID int64
 		opened     bool
 		anyActive  bool
@@ -185,18 +177,14 @@ func (h *Handler) runningLabs(ss *auth.Session, q, owner string) ([]RunningLab, 
 			_ = h.DB.QueryRow(`SELECT username, role FROM users WHERE id=?`, fl.OwnerID).Scan(&info[0], &info[1])
 			owners[fl.OwnerID] = info
 		}
-		// All rows go through the same checks: visibility by owner and instance, folder and search.
+		// All rows go through the same checks: lab visibility and the user's own machines.
 		if !admin {
-			// The user sees instances of their labs and their own running machines in other labs.
-			if fl.OwnerID != uid && d.instUserID != uid {
-				continue
-			}
-			// Labs in unassigned folders do not exist for the user.
-			allowed, err := access.FolderAllowed(h.DB, fl.ID, uid)
+			visible, err := access.LabVisible(h.DB, fl, uid, false)
 			if err != nil {
 				return nil, err
 			}
-			if !allowed {
+			// The user sees instances of visible labs and their own running machines in other labs.
+			if !visible && d.instUserID != uid {
 				continue
 			}
 		}
@@ -207,7 +195,7 @@ func (h *Handler) runningLabs(ss *auth.Session, q, owner string) ([]RunningLab, 
 			continue
 		}
 		rl := d.rl
-		rl.ID, rl.Name = fl.ID, fl.Name
+		rl.ID, rl.Name = fl.Name, fl.Name
 		rl.OwnerID, rl.Owner, rl.OwnerRole = fl.OwnerID, info[0], info[1]
 		rl.PublicLevel = fl.PublicLevel
 		kept = append(kept, ranked{rl: rl, row: d})
@@ -276,14 +264,10 @@ func (h *Handler) runningLabs(ss *auth.Session, q, owner string) ([]RunningLab, 
 
 	for i := range out {
 		rl := &out[i]
-		grantSet := map[string]bool{}
-		for k, v := range grants[rl.ID] {
-			grantSet[k] = v
+		perms, err := access.Perms(h.DB, rl.Name, uid, admin)
+		if err != nil {
+			return nil, err
 		}
-		for k := range roleGrants {
-			grantSet[k] = true
-		}
-		perms := access.Compose(admin, uid, rl.OwnerID, rl.PublicLevel, grantSet)
 		own := admin || rl.InstanceUserID == uid // only your own instance can be managed; an administrator - any
 		rl.Own = own
 		rl.Mine = rl.InstanceUserID == uid
@@ -323,7 +307,7 @@ func (h *Handler) runningList(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	rows, err := h.runningLabs(ss, r.URL.Query().Get("q"), r.URL.Query().Get("owner"))
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	httpx.JSON(w, http.StatusOK, rows)
@@ -332,7 +316,7 @@ func (h *Handler) runningList(w http.ResponseWriter, r *http.Request) {
 // ---------- lab wipe ----------
 
 // wipeLab stops all lab machines, terminates QEMU processes, releases TAP interfaces,
-// deletes working overlay disks and snapshots and returns devices to their initial state.
+// deletes working overlay disks and returns devices to their initial state.
 // Source images, uploaded disks, topology, wires and device placement do not change.
 func (h *Handler) wipeLab(w http.ResponseWriter, r *http.Request) {
 	lab, ok := h.labFor(w, r, access.LabWipe)
@@ -348,7 +332,7 @@ func (h *Handler) wipeLab(w http.ResponseWriter, r *http.Request) {
 	defer h.mu.Unlock()
 	rows, err := h.DB.Query(`SELECT id FROM instance_devices WHERE instance_id=? ORDER BY id`, iid)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	var ids []int64
@@ -359,7 +343,7 @@ func (h *Handler) wipeLab(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows.Close()
-	failed := []string{}
+	failed := []msgs.Message{}
 	done := 0
 	for _, id := range ids {
 		if h.WipeDevice == nil {
@@ -368,7 +352,7 @@ func (h *Handler) wipeLab(w http.ResponseWriter, r *http.Request) {
 		// Wipe stops the machine synchronously itself, so stopping and wiping the disk
 		// are performed under the same device lock (no race with starting).
 		if err := h.WipeDevice(id); err != nil {
-			failed = append(failed, fmt.Sprintf("машина %d: %v", id, err))
+			failed = append(failed, msgs.M("Machine {id}: {detail}", map[string]string{"id": strconv.FormatInt(id, 10), "detail": err.Error()}))
 			continue
 		}
 		done++
@@ -377,20 +361,21 @@ func (h *Handler) wipeLab(w http.ResponseWriter, r *http.Request) {
 	ss := auth.FromContext(r.Context())
 	// The wipe is written to the journal (lab_id and instance fields): the Wipe history is shared by the lab,
 	// while the "Running" list uses the wipe time of a specific instance.
-	h.DB.AuditData(ss.User.ID, ss.User.Username, journal.ActionLabWipe,
-		lab.Name+": экземпляр "+strconv.FormatInt(iid, 10)+", сброшено "+strconv.Itoa(done)+", ошибок "+strconv.Itoa(len(failed)),
-		auth.ClientIP(r), map[string]any{"lab_id": lab.ID, "instance": iid, "devices": done, "failed": len(failed)})
+	h.DB.AuditKey(ss.User.ID, ss.User.Username, journal.ActionLabWipe, "{lab}: instance {instance}, reset {devices}, errors {failed}",
+		map[string]string{"lab": lab.Name, "instance": strconv.FormatInt(iid, 10), "devices": strconv.Itoa(done), "failed": strconv.Itoa(len(failed))},
+		map[string]any{"lab_id": lab.Name, "instance": iid, "devices": done, "failed": len(failed)}, auth.ClientIP(r))
 	// Wipe is the only action that removes an instance from "Running": the start history of
 	// its machines only is reset. Other instances of the lab keep their history and remain in the list.
 	_, _ = h.DB.Exec(`UPDATE instance_devices SET started_at=0 WHERE instance_id=?`, iid)
-	touch(h.DB, lab.ID)
-	wipeLevel, wipeTitle := notify.Success, "Лаборатория сброшена"
+	touch(h.DB, lab.Name)
+	wipeLevel, wipeTitle := notify.Success, "Laboratory reset"
 	if len(failed) > 0 {
-		wipeLevel, wipeTitle = notify.Warning, "Сброс выполнен с ошибками"
+		wipeLevel, wipeTitle = notify.Warning, "Reset completed with errors"
 	}
 	h.Notify.SendInstance(iid, wipeLevel, "lab", wipeTitle,
-		"«"+lab.Name+"»: сброшено машин — "+strconv.Itoa(done)+", ошибок — "+strconv.Itoa(len(failed))+".",
-		"/labs/"+strconv.FormatInt(lab.ID, 10)+"/editor")
+		"«{name}»: machines reset — {done}, errors — {failed}.",
+		labLink(lab.Name),
+		notify.P("name", lab.Name, "done", strconv.Itoa(done), "failed", strconv.Itoa(len(failed))))
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": len(failed) == 0, "devices": done, "failed": failed, "instance": iid})
 }
 
@@ -400,9 +385,9 @@ func (h *Handler) wipeHistory(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	entries, err := h.DB.Journal.LabWipes(lab.ID, 20)
+	entries, err := h.DB.Journal.LabWipes(lab.Name, 20)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка журнала")
+		httpx.Err(w, http.StatusInternalServerError, "Journal error")
 		return
 	}
 	type wipe struct {
@@ -421,10 +406,11 @@ func (h *Handler) wipeHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 // noteAdmin writes an administrator's action in another lab to the journal (not GET).
-func (h *Handler) noteAdmin(r *http.Request, lab *Lab, what string) {
+func (h *Handler) noteAdmin(r *http.Request, lab *Lab, key string, params map[string]string) {
 	ss := auth.FromContext(r.Context())
 	if ss == nil || ss.User.Role != "admin" || lab.OwnerID == ss.User.ID {
 		return
 	}
-	h.audit(r, "admin_lab_action", what+": лаборатория «"+lab.Name+"» пользователя «"+lab.Owner+"» (id "+strconv.FormatInt(lab.ID, 10)+")")
+	h.auditKey(r, "admin_lab_action", "{what_key}: laboratory «{lab_name}» of user «{owner}» (id {lab_id})",
+		msgs.Merge(params, map[string]string{"what_key": key, "lab_name": lab.Name, "owner": lab.Owner, "lab_id": lab.Name}))
 }

@@ -49,15 +49,16 @@ func TestRunningQueryIncludesOpenedInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	var labs []int64
+	var labs []string
 	for rows.Next() {
-		var inst, lab int64
+		var inst int64
+		var lab string
 		if err := rows.Scan(&inst, &lab); err != nil {
 			t.Fatal(err)
 		}
 		labs = append(labs, lab)
 	}
 	if len(labs) != 2 {
-		t.Fatalf("ожидались запущенная и ранее открытая лаборатории, получено %v", labs)
+		t.Fatalf("want running and previously opened labs, got %v", labs)
 	}
 }

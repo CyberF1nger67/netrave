@@ -23,7 +23,7 @@ func TestLoadFileAndFlagOverride(t *testing.T) {
 	if cfg.Addr != ":9191" {
 		t.Fatalf("flag did not override file: %s", cfg.Addr)
 	}
-	if cfg.DataDir != filepath.Join(dir, "data") || cfg.ImagesDir != filepath.Join(dir, "data", "images") {
+	if cfg.DataDir != filepath.Join(dir, "data") || cfg.DisksDir != filepath.Join(dir, "data", "disks") {
 		t.Fatalf("derived paths: %+v", cfg)
 	}
 	if cfg.RestartSec != 5 {
@@ -36,7 +36,7 @@ func TestDataFlagRebasesDerivedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ImagesDir != "/tmp/netrave-config-test/images" || cfg.LogFile != "/tmp/netrave-config-test/netrave.log" {
+	if cfg.DisksDir != "/tmp/netrave-config-test/disks" || cfg.LogFile != "/tmp/netrave-config-test/netrave.log" {
 		t.Fatalf("derived paths not rebased: %+v", cfg)
 	}
 }
@@ -44,7 +44,7 @@ func TestDataFlagRebasesDerivedPaths(t *testing.T) {
 // Saving settings changes only the settings section: comments and other keys remain.
 func TestSaveSettingsKeepsOtherKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	body := "# мой конфиг\naddr: \":9090\"\nsettings:\n  session_ttl_hours: 24\n"
+	body := "# my config\naddr: \":9090\"\nsettings:\n  session_ttl_hours: 24\n"
 	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestSaveSettingsKeepsOtherKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.SetRoleAdminDescription("Админ"); err != nil {
+	if err := cfg.SetRoleAdminDescription("Admin"); err != nil {
 		t.Fatal(err)
 	}
 	raw, err := os.ReadFile(path)
@@ -60,7 +60,7 @@ func TestSaveSettingsKeepsOtherKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"# мой конфиг", "addr: \":9090\"", "role_admin_description: Админ", "session_ttl_hours: 24"} {
+	for _, want := range []string{"# my config", "addr: \":9090\"", "role_admin_description: Admin", "session_ttl_hours: 24"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("saved config lacks %q:\n%s", want, text)
 		}
@@ -69,7 +69,7 @@ func TestSaveSettingsKeepsOtherKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Settings.RoleAdminDescription != "Админ" || again.Addr != ":9090" {
+	if again.Settings.RoleAdminDescription != "Admin" || again.Addr != ":9090" {
 		t.Fatalf("reloaded config: %+v", again)
 	}
 }

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { Toaster } from '../components/Toaster';
+import { ConfirmHost } from '../components/ConfirmHost';
 import { closeAllConsoleSessions } from '../features/consoles/runtime';
 import { useAuthStore } from '../stores/auth';
 import { useThemeStore } from '../stores/theme';
@@ -30,6 +31,7 @@ export function RootLayout() {
     <>
       <Outlet />
       <Toaster />
+      <ConfirmHost />
     </>
   );
 }

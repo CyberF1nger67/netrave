@@ -24,8 +24,8 @@ test('floating console moves outside the viewport and stays put', async ({ page 
   await page.evaluate(async (url) => {
     const mod = await import(url) as { getDock: () => { open: (device: unknown, force: boolean) => void } };
     const dock = mod.getDock();
-    dock.open({ rid: 900001, name: 'E2E Dock', lab_id: 0, state: 'running', console: 'serial', lab_perms: {} }, false);
-    dock.open({ rid: 900002, name: 'E2E Dock 2', lab_id: 0, state: 'running', console: 'serial', lab_perms: {} }, false);
+    dock.open({ rid: 900001, name: 'E2E Dock', lab_id: '', state: 'running', console: 'serial', lab_perms: {} }, false);
+    dock.open({ rid: 900002, name: 'E2E Dock 2', lab_id: '', state: 'running', console: 'serial', lab_perms: {} }, false);
   }, dockUrl);
 
   const dock = page.locator('[data-dock]').first();

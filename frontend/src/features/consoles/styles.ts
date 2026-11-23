@@ -9,6 +9,6 @@ export const KBD_SERIAL_KEY = `${KBD_KEY} min-w-[38px]`;
 export const KBD_ON = 'bg-accent text-white';
 export const KBD_COMBO = 'font-semibold';
 export const CLIP_ROOT = 'absolute right-2 top-2 z-30 box-border w-[min(380px,calc(100%-16px))] rounded-[10px] border border-line bg-panel2 p-2 text-xs shadow-[0_8px_24px_rgba(0,0,0,.35)]';
-export const CLIP_SERIAL_ROOT = `${CLIP_ROOT} w-[min(420px,calc(100%-16px))]`;
+export const CLIP_SERIAL_ROOT = `${CLIP_ROOT} w-[min(680px,calc(100%-16px))]`;
 export const CLIP_TEXT = 'box-border min-h-[110px] w-full resize-y font-mono text-xs';
 export const CLIP_STATUS = 'mt-1 min-h-4 text-muted';

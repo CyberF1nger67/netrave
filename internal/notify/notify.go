@@ -46,7 +46,7 @@ const (
 
 // Event categories. Keys are used by the UI filter.
 const (
-	CatMachine  = "machine"  // start, stop, create, update, delete of machines, snapshots, disks
+	CatMachine  = "machine"  // start, stop, create, update, delete of machines, disks
 	CatLab      = "lab"      // labs: creation, parameters, deletion, wipe
 	CatCable    = "cable"    // network cables (wires)
 	CatNetwork  = "network"  // networks: NAT, isolated, Cloud; network connection errors
@@ -54,6 +54,7 @@ const (
 	CatTemplate = "template" // device templates
 	CatSettings = "settings" // system settings
 	CatAccount  = "account"  // users: creation, changes, passwords, permissions
+	CatMessage  = "message"  // messages written by administrators to users
 	CatSecurity = "security" // logins and logouts
 	CatBackup   = "backup"   // backups and lab restoration
 	CatSystem   = "system"   // platform errors and warnings
@@ -64,9 +65,9 @@ var Categories = []struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
 }{
-	{CatMachine, "Машины"}, {CatLab, "Лаборатории"}, {CatCable, "Кабели"}, {CatNetwork, "Сети"},
-	{CatImage, "Образы"}, {CatTemplate, "Шаблоны"}, {CatBackup, "Резервные копии"}, {CatSettings, "Настройки"},
-	{CatAccount, "Пользователи"}, {CatSecurity, "Вход и безопасность"}, {CatSystem, "Система"},
+	{CatMachine, "Machines"}, {CatLab, "Laboratories"}, {CatCable, "Cables"}, {CatNetwork, "Networks"},
+	{CatImage, "Images"}, {CatTemplate, "Templates"}, {CatBackup, "Backups"}, {CatSettings, "Settings"},
+	{CatAccount, "Users"}, {CatMessage, "Messages from administrators"}, {CatSecurity, "Sign-in and security"}, {CatSystem, "System"},
 }
 
 // Service sends notifications, broadcasts them over WebSocket and serves them via the HTTP API.
@@ -92,6 +93,44 @@ type Item struct {
 	Link      string `json:"link"`
 	Read      bool   `json:"read"`
 	CreatedAt int64  `json:"created_at"`
+	// Params fill the placeholders of Title and Body. Title and Body are English keys that the
+	// interface translates; they are not text in a language.
+	Params map[string]string `json:"params,omitempty"`
+}
+
+// P builds notification parameters from name and value pairs: P("name", x, "count", "2").
+func P(kv ...string) map[string]string {
+	m := map[string]string{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		m[kv[i]] = kv[i+1]
+	}
+	return m
+}
+
+// mergeParams combines parameter sets; later sets win.
+func mergeParams(sets []map[string]string) map[string]string {
+	var out map[string]string
+	for _, set := range sets {
+		for k, v := range set {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func sameParams(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
 }
 
 func normLevel(l string) string {
@@ -172,7 +211,7 @@ func (st *store) add(uid int64, it Item, now time.Time, connected func(int64) bo
 	st.prune(now, connected)
 	b := st.box(uid, now)
 	for _, x := range b.items {
-		if !x.Read && x.Level == it.Level && x.Category == it.Category && x.Title == it.Title && x.Body == it.Body && x.Link == it.Link {
+		if !x.Read && x.Level == it.Level && x.Category == it.Category && x.Title == it.Title && x.Body == it.Body && x.Link == it.Link && sameParams(x.Params, it.Params) {
 			return Item{}, false
 		}
 	}
@@ -300,13 +339,14 @@ func (s *Service) Snapshot(uid int64) []Item {
 // ---------- sending ----------
 
 // Send stores a notification for one user and broadcasts it over WebSocket.
-func (s *Service) Send(userID int64, level, category, title, body, link string) {
+func (s *Service) Send(userID int64, level, category, title, body, link string, params ...map[string]string) {
 	if s == nil || userID == 0 {
 		return
 	}
 	it := Item{
 		Level: normLevel(level), Category: normCategory(category),
 		Title: cut(title, 200), Body: cut(body, 2000), Link: cut(link, 200),
+		Params: mergeParams(params),
 	}
 	saved, ok := s.mem.add(userID, it, time.Now(), s.hub.connected)
 	if !ok {
@@ -317,7 +357,7 @@ func (s *Service) Send(userID int64, level, category, title, body, link string) 
 
 // Activity reports an event to the initiator and the object owner, as well as to all administrators.
 // actorID or ownerID may be 0 (unknown); duplicate recipients are filtered out.
-func (s *Service) Activity(actorID, ownerID int64, level, category, title, body, link string) {
+func (s *Service) Activity(actorID, ownerID int64, level, category, title, body, link string, params ...map[string]string) {
 	if s == nil || s.DB == nil {
 		return
 	}
@@ -328,26 +368,26 @@ func (s *Service) Activity(actorID, ownerID int64, level, category, title, body,
 			continue
 		}
 		seen[uid] = true
-		s.Send(uid, level, category, title, body, link)
+		s.Send(uid, level, category, title, body, link, params...)
 	}
 }
 
 // SendAdmins sends a notification to all active administrators.
-func (s *Service) SendAdmins(level, category, title, body, link string) {
+func (s *Service) SendAdmins(level, category, title, body, link string, params ...map[string]string) {
 	for _, uid := range s.ids(`SELECT id FROM users WHERE role='admin' AND disabled=0`) {
-		s.Send(uid, level, category, title, body, link)
+		s.Send(uid, level, category, title, body, link, params...)
 	}
 }
 
 // SendActive sends a notification to all active users except exceptUserID (0 - exclude no one).
-func (s *Service) SendActive(exceptUserID int64, level, category, title, body, link string) {
+func (s *Service) SendActive(exceptUserID int64, level, category, title, body, link string, params ...map[string]string) {
 	for _, uid := range s.ids(`SELECT id FROM users WHERE disabled=0 AND id<>?`, exceptUserID) {
-		s.Send(uid, level, category, title, body, link)
+		s.Send(uid, level, category, title, body, link, params...)
 	}
 }
 
 // SendInstance sends a notification to the lab instance owner (lab_instances.user_id).
-func (s *Service) SendInstance(instanceID int64, level, category, title, body, link string) {
+func (s *Service) SendInstance(instanceID int64, level, category, title, body, link string, params ...map[string]string) {
 	if s == nil || s.DB == nil {
 		return
 	}
@@ -355,7 +395,7 @@ func (s *Service) SendInstance(instanceID int64, level, category, title, body, l
 	if err := s.DB.QueryRow(`SELECT user_id FROM lab_instances WHERE id=?`, instanceID).Scan(&uid); err != nil {
 		return
 	}
-	s.Send(uid, level, category, title, body, link)
+	s.Send(uid, level, category, title, body, link, params...)
 }
 
 // ids reads a list of identifiers from the query (errors are logged, the list is empty).
@@ -365,7 +405,7 @@ func (s *Service) ids(query string, args ...any) []int64 {
 	}
 	rows, err := s.DB.Query(query, args...)
 	if err != nil {
-		log.Printf("уведомления: выборка получателей: %v", err)
+		log.Printf("notifications: selecting recipients: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -471,17 +511,17 @@ func (s *Service) unread(uid int64) int {
 func (s *Service) wsHandler(as *auth.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !auth.SameOrigin(r) {
-			httpx.Err(w, http.StatusForbidden, "недопустимый Origin")
+			httpx.Err(w, http.StatusForbidden, "Invalid Origin")
 			return
 		}
 		c, err := r.Cookie(auth.CookieName)
 		if err != nil || c.Value == "" {
-			httpx.Err(w, http.StatusUnauthorized, "требуется авторизация")
+			httpx.Err(w, http.StatusUnauthorized, "Authorization required")
 			return
 		}
 		ss, err := as.Lookup(c.Value)
 		if err != nil {
-			httpx.Err(w, http.StatusUnauthorized, "сессия недействительна")
+			httpx.Err(w, http.StatusUnauthorized, "The session is invalid")
 			return
 		}
 		conn, err := console.Upgrade(w, r)
@@ -562,7 +602,7 @@ func (s *Service) setRead(w http.ResponseWriter, r *http.Request) {
 	uid := auth.FromContext(r.Context()).User.ID
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	var in struct {
@@ -572,11 +612,11 @@ func (s *Service) setRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Read == nil {
-		httpx.Err(w, http.StatusBadRequest, "укажите поле read")
+		httpx.Err(w, http.StatusBadRequest, "Specify the read field")
 		return
 	}
 	if !s.mem.setRead(uid, id, *in.Read, time.Now()) {
-		httpx.Err(w, http.StatusNotFound, "уведомление не найдено")
+		httpx.Err(w, http.StatusNotFound, "Notification not found")
 		return
 	}
 	s.publishSync(uid)
@@ -596,11 +636,11 @@ func (s *Service) remove(w http.ResponseWriter, r *http.Request) {
 	uid := auth.FromContext(r.Context()).User.ID
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id")
+		httpx.Err(w, http.StatusBadRequest, "Invalid id")
 		return
 	}
 	if !s.mem.remove(uid, id, time.Now()) {
-		httpx.Err(w, http.StatusNotFound, "уведомление не найдено")
+		httpx.Err(w, http.StatusNotFound, "Notification not found")
 		return
 	}
 	s.publishSync(uid)

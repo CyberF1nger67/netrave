@@ -1,8 +1,8 @@
 import { RawBody, request, requestBlob, requestText, uploadFile, uploadImage } from './client';
 import type { NicMAC } from '../types/api';
 import type {
-  AuditEntry, Connection, DashboardLive, Device, DeviceCreateInput, IconItem, IconUpload, ImageItem,
-  FolderAccess, Lab, LabFolder, LabInstance, LabPermissions, LabStatus, LabCanvas, Session, Settings, Snapshot, SystemInfo,
+  AuditEntry, Connection, DashboardLive, Message, Device, DeviceCreateInput, IconItem, IconUpload, ImageItem,
+  Lab, LabFolder, LabInstance, LabPermissions, LabStatus, LabCanvas, Session, Settings, SystemInfo,
   RbacMember, RbacPermission, RbacRole,
   Template, ThemeCatalog, ThemeResponse, ThemeState, Topology, User, VncQualityResponse, VncQualitySettings, WipeResult,
 } from '../types/api';
@@ -58,6 +58,18 @@ export const ksmApi = {
     json<PageMergingStatus>('PUT', '/api/ksm', { mechanism, enabled }),
 };
 
+export interface MessageRequest {
+  text: string;
+  level: 'info' | 'warning';
+  all: boolean;
+  user_ids: number[];
+}
+
+// Administrator messages: delivered as notifications to all active users or to the listed ones.
+export const messagesApi = {
+  send: (body: MessageRequest) => json<{ sent: number }>('POST', '/api/messages', body),
+};
+
 export const usersApi = {
   list: () => request<User[]>('GET', '/api/users'),
   create: (username: string, password: string, role: string, confirm?: string, roleId?: number) =>
@@ -65,9 +77,6 @@ export const usersApi = {
   update: (id: number, patch: { role?: string; disabled?: boolean; password?: string; confirm?: string }) =>
     json<{ ok: boolean }>('PUT', `/api/users/${id}`, patch),
   remove: (id: number) => json<{ ok: boolean }>('DELETE', `/api/users/${id}`),
-  folders: (id: number) => request<FolderAccess>('GET', `/api/users/${id}/folders`),
-  setFolders: (id: number, folderIds: number[]) =>
-    json<{ ok: boolean; folder_ids: number[] }>('PUT', `/api/users/${id}/folders`, { folder_ids: folderIds }),
 };
 
 export const rolesApi = {
@@ -77,13 +86,11 @@ export const rolesApi = {
   create: (name: string, description: string) =>
     json<RbacRole>('POST', '/api/roles', { name, description }),
   update: (id: number, patch: {
-    name?: string; description?: string; permissions?: string[]; folder_ids?: number[]; max_running_labs?: number;
+    name?: string; description?: string; permissions?: string[]; max_running_labs?: number;
   }) => json<RbacRole>('PUT', `/api/roles/${id}`, patch),
   remove: (id: number) => json<{ ok: boolean }>('DELETE', `/api/roles/${id}`),
   setPermissions: (id: number, permissions: string[]) =>
     json<{ ok: boolean; permissions: string[] }>('PUT', `/api/roles/${id}/permissions`, { permissions }),
-  setFolders: (id: number, folderIds: number[]) =>
-    json<{ ok: boolean; folder_ids: number[] }>('PUT', `/api/roles/${id}/folders`, { folder_ids: folderIds }),
   members: (id: number) => request<RbacMember[]>('GET', `/api/roles/${id}/members`),
   addMembers: (id: number, userIds: number[]) =>
     json<{ ok: boolean; user_ids: number[] }>('POST', `/api/roles/${id}/members`, { user_ids: userIds }),
@@ -108,49 +115,50 @@ export const logsApi = {
 };
 
 export const labsApi = {
-  list: (search = '', folder?: number) => request<Lab[]>('GET', `/api/labs${q({ q: search, folder })}`),
-  get: (id: number) => request<Lab>('GET', `/api/labs/${id}`),
+  list: (search = '', folder?: string) => request<Lab[]>('GET', `/api/labs${q({ q: search, folder })}`),
+  get: (name: string) => request<Lab>('GET', `/api/labs/${encodeURIComponent(name)}`),
   create: (name: string, description: string) => json<Lab>('POST', '/api/labs', { name, description }),
-  update: (id: number, patch: { name?: string; description?: string; canvas?: LabCanvas }) =>
-    json<{ ok: boolean }>('PUT', `/api/labs/${id}`, patch),
-  remove: (id: number) => json<{ ok: boolean }>('DELETE', `/api/labs/${id}`),
-  copy: (id: number) => json<Lab>('POST', `/api/labs/${id}/copy`),
-  exportLab: (id: number) => requestBlob(`/api/labs/${id}/export`),
-  importLab: (yaml: string) => request<{ id: number; warnings?: string[] }>('POST', '/api/labs/import', new RawBody(yaml, 'application/yaml')),
-  topology: (id: number, instance?: number) =>
-    request<Topology>('GET', `/api/labs/${id}/topology${q({ instance })}`),
-  getByInstance: (id: number, instance?: number) =>
-    request<Lab>('GET', `/api/labs/${id}${q({ instance })}`),
+  update: (name: string, patch: { name?: string; description?: string; canvas?: LabCanvas }) =>
+    json<{ ok: boolean }>('PUT', `/api/labs/${encodeURIComponent(name)}`, patch),
+  remove: (name: string) => json<{ ok: boolean }>('DELETE', `/api/labs/${encodeURIComponent(name)}`),
+  copy: (name: string) => json<Lab>('POST', `/api/labs/${encodeURIComponent(name)}/copy`),
+  exportLab: (name: string) => requestBlob(`/api/labs/${encodeURIComponent(name)}/export`),
+  importLab: (yaml: string) => request<{ id: string; warnings?: Message[] }>('POST', '/api/labs/import', new RawBody(yaml, 'application/yaml')),
+  topology: (name: string, instance?: number) =>
+    request<Topology>('GET', `/api/labs/${encodeURIComponent(name)}/topology${q({ instance })}`),
+  getByInstance: (name: string, instance?: number) =>
+    request<Lab>('GET', `/api/labs/${encodeURIComponent(name)}${q({ instance })}`),
   running: (search = '', owner = '') =>
     request<import('../types/api').RunningLab[]>('GET', `/api/labs/running${q({ q: search, owner })}`),
-  instances: (id: number) => request<LabInstance[]>('GET', `/api/labs/${id}/instances`),
-  permissions: (id: number) => request<LabPermissions>('GET', `/api/labs/${id}/permissions`),
-  setPermission: (labId: number, userId: number, changes: Record<string, boolean>) =>
-    json<{ ok: boolean }>('PUT', `/api/labs/${labId}/permissions/${userId}`, { changes }),
-  setPublic: (id: number, level: 'none' | 'view') => json<{ ok: boolean }>('PUT', `/api/labs/${id}/public`, { level }),
-  positions: (id: number, devices: Array<{ id: number; x: number; y: number; icon_size?: number }>, networks: Array<{ id: number; x: number; y: number }>) =>
-    json<{ ok: boolean }>('PUT', `/api/labs/${id}/positions`, { devices, networks }),
-  deleteBulk: (id: number, devices: number[], networks: number[], connections: number[]) =>
-    json<{ ok: boolean; warnings?: string[] }>('POST', `/api/labs/${id}/delete`, { devices, networks, connections }),
-  paste: (id: number, devices: number[], networks: number[], dx: number, dy: number) =>
-    json<{ devices: Device[]; networks: import('../types/api').Network[]; connections: Connection[] }>('POST', `/api/labs/${id}/paste`, { devices, networks, dx, dy }),
-  createDevice: async (id: number, input: DeviceCreateInput): Promise<Device[]> => {
-    const result = await json<Device | Device[]>('POST', `/api/labs/${id}/devices`, input);
+  instances: (name: string) => request<LabInstance[]>('GET', `/api/labs/${encodeURIComponent(name)}/instances`),
+  permissions: (name: string) => request<LabPermissions>('GET', `/api/labs/${encodeURIComponent(name)}/permissions`),
+  setPermission: (labName: string, userId: number, changes: Record<string, boolean>) =>
+    json<{ ok: boolean }>('PUT', `/api/labs/${encodeURIComponent(labName)}/permissions/${userId}`, { changes }),
+  setPublic: (name: string, level: 'none' | 'view') => json<{ ok: boolean }>('PUT', `/api/labs/${encodeURIComponent(name)}/public`, { level }),
+  positions: (name: string, devices: Array<{ id: string; x: number; y: number; icon_size?: number }>, networks: Array<{ id: string; x: number; y: number }>) =>
+    json<{ ok: boolean }>('PUT', `/api/labs/${encodeURIComponent(name)}/positions`, { devices, networks }),
+  deleteBulk: (name: string, devices: string[], networks: string[], connections: string[]) =>
+    json<{ ok: boolean; warnings?: Message[] }>('POST', `/api/labs/${encodeURIComponent(name)}/delete`, { devices, networks, connections }),
+  paste: (name: string, devices: string[], networks: string[], dx: number, dy: number) =>
+    json<{ devices: Device[]; networks: import('../types/api').Network[]; connections: Connection[] }>('POST', `/api/labs/${encodeURIComponent(name)}/paste`, { devices, networks, dx, dy }),
+  createDevice: async (name: string, input: DeviceCreateInput): Promise<Device[]> => {
+    const result = await json<Device | Device[]>('POST', `/api/labs/${encodeURIComponent(name)}/devices`, input);
     return Array.isArray(result) ? result : [result];
   },
-  updateDevice: (rid: number, patch: Record<string, unknown>) => json<Device>('PUT', `/api/devices/${rid}`, patch),
-  createNetwork: (id: number, type: string, x: number, y: number) =>
-    json<import('../types/api').Network>('POST', `/api/labs/${id}/networks`, { type, x, y }),
-  updateNetwork: (id: number, patch: Record<string, unknown>) =>
-    json<import('../types/api').Network>('PUT', `/api/networks/${id}`, patch),
-  createConnection: (id: number, input: Record<string, unknown>) =>
-    json<Connection>('POST', `/api/labs/${id}/connections`, input),
-  setConnectionState: (connId: number, up: boolean, instance?: number) =>
-    json<{ id: number; up: boolean }>('PUT', `/api/connections/${connId}/state${q({ instance })}`, { up }),
-  startAll: (id: number, instance?: number) => json<{ ok: boolean }>('POST', `/api/labs/${id}/start-all${q({ instance })}`),
-  stopAll: (id: number, instance?: number) => json<{ ok: boolean }>('POST', `/api/labs/${id}/stop-all${q({ instance })}`),
-  wipe: (id: number, instance?: number) => json<WipeResult>('POST', `/api/labs/${id}/wipe${q({ instance })}`),
-  status: (id: number, instance?: number) => request<LabStatus>('GET', `/api/labs/${id}/status${q({ instance })}`),
+  updateDevice: (labName: string, deviceName: string, patch: Record<string, unknown>) =>
+    json<Device>('PUT', `/api/labs/${encodeURIComponent(labName)}/devices/${encodeURIComponent(deviceName)}`, patch),
+  createNetwork: (name: string, type: string, x: number, y: number) =>
+    json<import('../types/api').Network>('POST', `/api/labs/${encodeURIComponent(name)}/networks`, { type, x, y }),
+  updateNetwork: (labName: string, networkName: string, patch: Record<string, unknown>) =>
+    json<import('../types/api').Network>('PUT', `/api/labs/${encodeURIComponent(labName)}/networks/${encodeURIComponent(networkName)}`, patch),
+  createConnection: (name: string, input: Record<string, unknown>) =>
+    json<Connection>('POST', `/api/labs/${encodeURIComponent(name)}/connections`, input),
+  setConnectionState: (labName: string, key: string, up: boolean, instance?: number) =>
+    json<{ key: string; up: boolean }>('PUT', `/api/labs/${encodeURIComponent(labName)}/connections/${encodeURIComponent(key)}/state${q({ instance })}`, { up }),
+  startAll: (name: string, instance?: number) => json<{ ok: boolean }>('POST', `/api/labs/${encodeURIComponent(name)}/start-all${q({ instance })}`),
+  stopAll: (name: string, instance?: number) => json<{ ok: boolean }>('POST', `/api/labs/${encodeURIComponent(name)}/stop-all${q({ instance })}`),
+  wipe: (name: string, instance?: number) => json<WipeResult>('POST', `/api/labs/${encodeURIComponent(name)}/wipe${q({ instance })}`),
+  status: (name: string, instance?: number) => request<LabStatus>('GET', `/api/labs/${encodeURIComponent(name)}/status${q({ instance })}`),
 };
 
 export const devicesApi = {
@@ -158,13 +166,9 @@ export const devicesApi = {
     json<{ ok: boolean }>('POST', `/api/devices/${rid}/${action}${query}`),
   nics: (rid: number) => request<NicMAC[]>('GET', `/api/devices/${rid}/nics`),
   clone: (rid: number) => json<Device>('POST', `/api/devices/${rid}/clone`),
-  commit: (rid: number, mode: 'snapshot' | 'image' | 'original', name: string, stopFirst: boolean) =>
-    json<{ ok: boolean; image_id: number }>('POST', `/api/devices/${rid}/commit`, { mode, name, stop_first: stopFirst }),
+  commit: (rid: number, mode: 'image' | 'original', name: string, stopFirst: boolean) =>
+    json<{ ok: boolean; image_id: string }>('POST', `/api/devices/${rid}/commit`, { mode, name, stop_first: stopFirst }),
   log: (rid: number) => requestText(`/api/devices/${rid}/log`),
-  snapshots: (rid: number) => request<Snapshot[]>('GET', `/api/devices/${rid}/snapshots`),
-  createSnapshot: (rid: number, name: string) => json<Snapshot>('POST', `/api/devices/${rid}/snapshots`, { name }),
-  restoreSnapshot: (id: number) => json<{ ok: boolean }>('POST', `/api/snapshots/${id}/restore`),
-  deleteSnapshot: (id: number) => json<{ ok: boolean }>('DELETE', `/api/snapshots/${id}`),
 };
 
 export const templatesApi = {
@@ -177,7 +181,7 @@ export const templatesApi = {
 
 export const imagesApi = {
   list: () => request<ImageItem[]>('GET', '/api/images'),
-  scan: (quiet = false) => json<{ added: number; updated: number; problems?: string[] }>('POST', `/api/images/scan${quiet ? '?quiet=1' : ''}`),
+  scan: (quiet = false) => json<{ added: number; updated: number; problems?: Message[] }>('POST', `/api/images/scan${quiet ? '?quiet=1' : ''}`),
   rename: (id: number, name: string) => json<{ ok: boolean }>('PUT', `/api/images/${id}`, { name }),
   remove: (id: number) => json<{ ok: boolean }>('DELETE', `/api/images/${id}`),
   upload: (dir: string, file: File, onProgress?: (loaded: number) => void) =>
@@ -194,13 +198,16 @@ export const iconsApi = {
 
 export const foldersApi = {
   list: () => request<LabFolder[]>('GET', '/api/lab-folders'),
-  create: (name: string, parentId: number | null) => json<LabFolder>('POST', '/api/lab-folders', { name, parent_id: parentId }),
-  update: (id: number, patch: { name?: string; parent_id?: number | null }) =>
-    json<LabFolder>('PUT', `/api/lab-folders/${id}`, patch),
-  remove: (id: number, moveTo?: number) =>
-    json<{ ok: boolean; labs: number; moved_labs: number }>('DELETE', `/api/lab-folders/${id}${moveTo ? `?move_to=${moveTo}` : ''}`),
-  placeLab: (labId: number, folderId: number | null) =>
-    json<{ ok: boolean }>('PUT', `/api/labs/${labId}/folder`, { folder_id: folderId }),
+  create: (name: string, parent: string) => json<LabFolder>('POST', '/api/lab-folders', { name, parent }),
+  update: (path: string, patch: { name?: string; parent?: string | null }) =>
+    json<LabFolder>('PUT', '/api/lab-folders', { path, ...patch }),
+  remove: (path: string, moveTo?: string) => {
+    const search = new URLSearchParams({ path });
+    if (moveTo) search.set('move_to', moveTo);
+    return json<{ ok: boolean; labs: number; moved_labs: number }>('DELETE', `/api/lab-folders?${search.toString()}`);
+  },
+  placeLab: (labName: string, folder: string | null) =>
+    json<{ ok: boolean }>('PUT', `/api/labs/${encodeURIComponent(labName)}/folder`, { folder }),
 };
 
 export const notificationsApi = {
@@ -210,3 +217,4 @@ export const notificationsApi = {
   readAll: () => json<{ ok: boolean }>('POST', '/api/notifications/read-all'),
   clearRead: () => json<{ ok: boolean }>('POST', '/api/notifications/clear-read'),
 };
+

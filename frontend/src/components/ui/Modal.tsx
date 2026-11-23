@@ -15,14 +15,16 @@ interface ModalProps {
   children: ReactNode;
   actions?: ModalAction[];
   wide?: boolean;
+  /** When false, only the dialog's own actions close it: Escape and a click outside do nothing. Default true. */
+  dismissible?: boolean;
   onClose: () => void;
 }
 
-export function Modal({ title, children, actions = [], wide, onClose }: ModalProps) {
+export function Modal({ title, children, actions = [], wide, dismissible = true, onClose }: ModalProps) {
   const boxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (dismissible && event.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
     const previous = document.activeElement;
@@ -32,11 +34,11 @@ export function Modal({ title, children, actions = [], wide, onClose }: ModalPro
     if (first) first.focus();
     else box?.focus();
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, dismissible]);
 
   const host = document.fullscreenElement ?? document.body;
   return createPortal(
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(4,8,14,.6)] p-4 backdrop-blur-[5px] animate-fade-in" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-[rgba(4,8,14,.6)] p-4 backdrop-blur-[5px] animate-fade-in" onMouseDown={(event) => { if (dismissible && event.target === event.currentTarget) onClose(); }}>
       <div className={`max-h-[90vh] w-[min(560px,100%)] overflow-auto rounded-[18px] border border-line bg-panel p-6 shadow-[0_30px_80px_-20px_rgba(0,0,0,.6)] animate-modal-in max-sm:p-[18px] ${wide ? 'w-[min(1000px,100%)]' : ''}`} role="dialog" aria-modal="true" aria-label={title} ref={boxRef} tabIndex={-1}>
         <h3 className="mb-2.5 mt-0 text-lg font-bold tracking-[-.01em] text-text">{title}</h3>
         <div>{children}</div>

@@ -331,6 +331,13 @@ func deny(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+// denyKey is deny for an English key with {name} parameters; the interface translates it.
+func denyKey(w http.ResponseWriter, code int, key string, params map[string]string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": key, "params": params})
+}
+
 // ClearCookie deletes the session cookie.
 func ClearCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: CookieName, Value: "", Path: "/", MaxAge: -1,
@@ -346,19 +353,19 @@ func (s *Service) Require(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(CookieName)
 		if err != nil || c.Value == "" {
-			deny(w, http.StatusUnauthorized, "требуется авторизация")
+			deny(w, http.StatusUnauthorized, "Authorization required")
 			return
 		}
 		ss, err := s.Lookup(c.Value)
 		if err != nil {
 			ClearCookie(w, r)
-			deny(w, http.StatusUnauthorized, "сессия недействительна")
+			deny(w, http.StatusUnauthorized, "The session is invalid")
 			return
 		}
 		if !safeMethod(r.Method) {
 			tok := r.Header.Get("X-CSRF-Token")
 			if !SameOrigin(r) || subtle.ConstantTimeCompare([]byte(tok), []byte(ss.CSRF)) != 1 {
-				deny(w, http.StatusForbidden, "CSRF-проверка не пройдена")
+				deny(w, http.StatusForbidden, "CSRF check failed")
 				return
 			}
 		}
@@ -370,7 +377,7 @@ func (s *Service) Require(next http.Handler) http.Handler {
 func (s *Service) RequireAdmin(next http.Handler) http.Handler {
 	return s.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if FromContext(r.Context()).User.Role != "admin" {
-			deny(w, http.StatusForbidden, "доступно только администратору")
+			deny(w, http.StatusForbidden, "Available to administrators only")
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -421,7 +428,7 @@ func isGlobalSection(p string) bool {
 func (s *Service) RequirePerm(perm string, next http.Handler) http.Handler {
 	return s.Require(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !FromContext(r.Context()).User.Can(perm) {
-			deny(w, http.StatusForbidden, "нет права: "+perm)
+			denyKey(w, http.StatusForbidden, "No permission: {permission_key}", map[string]string{"permission_key": perm})
 			return
 		}
 		next.ServeHTTP(w, r)

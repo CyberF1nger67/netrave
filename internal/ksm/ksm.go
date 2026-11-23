@@ -24,8 +24,6 @@ import (
 
 // Page merging kind.
 const (
-	// KindNone - merging is unavailable.
-	KindNone = ""
 	// KindKSM - the kernel's standard KSM.
 	KindKSM = "ksm"
 	// KindUKSM - UKSM (a separate KSM variant).
@@ -42,10 +40,10 @@ var (
 var mu sync.Mutex
 
 // ErrUnavailable - the kernel has no page merging (not built in or not loaded).
-var ErrUnavailable = errors.New("ksm: поддержка слияния страниц не найдена в ядре")
+var ErrUnavailable = errors.New("ksm: page merging support not found in the kernel")
 
 // ErrUnknownKind - an unknown mechanism was requested.
-var ErrUnknownKind = errors.New("ksm: неизвестный механизм слияния страниц")
+var ErrUnknownKind = errors.New("ksm: unknown page merging mechanism")
 
 // Mechanism - the state of one mechanism.
 type Mechanism struct {
@@ -210,6 +208,3 @@ func (sysfs) Set(kind string, enabled bool) error {
 
 // Read returns the current state of both mechanisms.
 func Read() Status { return SYSFS.Status() }
-
-// SetEnabled enables or disables a mechanism (KindKSM or KindUKSM).
-func SetEnabled(kind string, enabled bool) error { return SYSFS.Set(kind, enabled) }

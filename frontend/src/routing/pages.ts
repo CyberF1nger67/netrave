@@ -3,11 +3,11 @@ import type { PageDef } from '../stores/auth';
 import type { t } from '../i18n';
 import { paths } from './paths';
 
-export type TranslationKey = Parameters<typeof t>[0];
+type TranslationKey = Parameters<typeof t>[0];
 
-export type NavGroup = 'Work' | 'Resources' | 'System' | 'Administration';
+type NavGroup = 'Work' | 'Resources' | 'System' | 'Administration';
 
-export interface PageMeta extends PageDef {
+interface PageMeta extends PageDef {
   title: TranslationKey;
   path: string;
   icon: IconName;
@@ -26,16 +26,17 @@ export const PAGES = {
   settings: { title: 'Settings', path: paths.settings, admin: true, icon: 'settings' },
   users: { title: 'Users', path: paths.users, perm: 'users.view', icon: 'users' },
   roles: { title: 'Roles', path: paths.roles, admin: true, icon: 'users' },
+  messages: { title: 'Messages', path: paths.messages, admin: true, icon: 'mail' },
 } satisfies Record<string, PageMeta>;
 
-export type PageKey = keyof typeof PAGES;
+type PageKey = keyof typeof PAGES;
 
 /** Side menu groups and the pages in them. The account is opened from the profile menu, so it is not in the groups. */
 export const NAV_GROUPS: Array<{ title: NavGroup; items: PageKey[] }> = [
   { title: 'Work', items: ['labs', 'running'] },
   { title: 'Resources', items: ['templates', 'images', 'icons'] },
   { title: 'System', items: ['dashboard', 'journal', 'settings', 'themes'] },
-  { title: 'Administration', items: ['users', 'roles'] },
+  { title: 'Administration', items: ['users', 'messages', 'roles'] },
 ];
 
 /** Page key by the first path segment, e.g. `/users/5` -> `users`. */

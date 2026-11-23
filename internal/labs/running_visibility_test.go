@@ -23,22 +23,22 @@ func TestOpenedForeignInstanceIsHidden(t *testing.T) {
 		t.Helper()
 		var out []RunningLab
 		rec := e.do(t, u, http.MethodGet, "/api/labs/running"+query, nil)
-		expect(t, rec, http.StatusOK, "список запущенных")
+		expect(t, rec, http.StatusOK, "running list")
 		decodeJSON(t, rec.Body.Bytes(), &out)
 		return out
 	}
 
 	if rows := fetch(stranger, ""); len(rows) != 0 {
-		t.Fatalf("посторонний видит открытый экземпляр чужой лаборатории: %+v", rows)
+		t.Fatalf("outsider sees an opened instance of a foreign lab: %+v", rows)
 	}
 	if rows := fetch(stranger, "?q=lab"); len(rows) != 0 {
-		t.Fatalf("поиск не должен открывать чужую лабораторию: %+v", rows)
+		t.Fatalf("search must not reveal a foreign lab: %+v", rows)
 	}
 	// The owner sees their lab's row, and a search for a non-matching name hides it.
 	if rows := fetch(owner, ""); len(rows) != 1 {
-		t.Fatalf("владелец должен видеть открытый экземпляр своей лаборатории: %+v", rows)
+		t.Fatalf("owner must see the opened instance of their lab: %+v", rows)
 	}
 	if rows := fetch(owner, "?q=zzz"); len(rows) != 0 {
-		t.Fatalf("поиск должен скрывать открытые строки, не совпадающие с запросом: %+v", rows)
+		t.Fatalf("search must hide opened rows that do not match the query: %+v", rows)
 	}
 }

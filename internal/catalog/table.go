@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-// Package catalog stores catalogs: images, machine templates and snapshots. Each entry is a separate
+// Package catalog stores catalogs: images and machine templates. Each entry is a separate
 // YAML file whose name equals the entry name: <dir>/<table>/<name>.yaml. The file stores
-// the numeric entry number (labs reference it). The number counter lives in index.yaml and is never
-// reused.
+// the numeric entry number (labs reference it). A new number is one more than the largest
+// number in use; references to deleted entries are cleared by their owners.
 package catalog
 
 import (
@@ -17,19 +17,14 @@ import (
 	"sync"
 
 	"gopkg.in/yaml.v3"
+	"netrave/internal/yamlfmt"
 
+	"netrave/internal/msgs"
 	"netrave/internal/names"
 )
 
 // ErrNotFound - no row with this number.
-var ErrNotFound = errors.New("запись не найдена")
-
-const indexFile = "index.yaml"
-
-// index - the table's number counter.
-type index struct {
-	NextID int64 `yaml:"next_id"`
-}
+var ErrNotFound = errors.New("Record not found")
 
 // table - a table of entries T. id returns a pointer to the entry number field, key is the entry name,
 // used to build the file name.
@@ -42,35 +37,18 @@ type table[T any] struct {
 	rows []T
 }
 
-// openTable opens the table in directory dir. fresh reports that the table does not exist yet.
-func openTable[T any](dir string, id func(*T) *int64, key func(*T) string) (*table[T], bool, error) {
+// openTable opens the table in directory dir.
+func openTable[T any](dir string, id func(*T) *int64, key func(*T) string) (*table[T], error) {
 	t := &table[T]{dir: dir, id: id, key: key, next: 1}
-	_, err := os.Stat(filepath.Join(dir, indexFile))
-	fresh := errors.Is(err, os.ErrNotExist)
-	if err != nil && !fresh {
-		return nil, false, err
-	}
 	if err := t.load(); err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	return t, fresh, nil
+	return t, nil
 }
 
 // load reads the counter and all table entries from its directory.
 func (t *table[T]) load() error {
 	t.next = 1
-	idxPath := filepath.Join(t.dir, indexFile)
-	if data, err := os.ReadFile(idxPath); err == nil {
-		var idx index
-		if err := yaml.Unmarshal(data, &idx); err != nil {
-			return fmt.Errorf("%s: %w", idxPath, err)
-		}
-		if idx.NextID > t.next {
-			t.next = idx.NextID
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
 
 	entries, err := os.ReadDir(t.dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -84,12 +62,12 @@ func (t *table[T]) load() error {
 	seenIDs := map[int64]string{}
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || name == indexFile || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".yaml") {
+		if e.IsDir() || strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
 		stem := strings.TrimSuffix(name, ".yaml")
 		if !names.Valid(stem) {
-			return fmt.Errorf("%s: имя файла должно быть латинским (буквы, цифры, '-', '_')", filepath.Join(t.dir, name))
+			return msgs.New("{path}: invalid file name", map[string]string{"path": filepath.Join(t.dir, name)})
 		}
 		path := filepath.Join(t.dir, name)
 		data, err := os.ReadFile(path)
@@ -101,21 +79,17 @@ func (t *table[T]) load() error {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		if got := t.key(&r); got != stem {
-			return fmt.Errorf("%s: имя записи %q не совпадает с именем файла", path, got)
+			return msgs.New("{path}: record name «{name}» does not match the file name", map[string]string{"path": path, "name": got})
 		}
 		id := *t.id(&r)
 		if other, dup := seenIDs[id]; dup {
-			return fmt.Errorf("%s: номер %d уже занят файлом %s.yaml", path, id, other)
+			return msgs.New("{path}: number {id} is already taken by file {file}.yaml", map[string]string{"path": path, "id": fmt.Sprint(id), "file": other})
 		}
 		seenIDs[id] = stem
 		rows = append(rows, r)
 	}
 	sort.Slice(rows, func(i, j int) bool { return *t.id(&rows[i]) < *t.id(&rows[j]) })
-	for i := range rows {
-		if id := *t.id(&rows[i]); id >= t.next {
-			t.next = id + 1
-		}
-	}
+	t.next = nextNumber(rows, t.id)
 	t.rows = rows
 	return nil
 }
@@ -128,27 +102,20 @@ func (t *table[T]) path(key string) string {
 // persist writes the new table state: first the counter, then the changed entries, then deletes files
 // of entries that no longer exist or were renamed. Counter first: after a failure, the number already issued to an entry
 // will not be issued again. Each entry is a separate file, so the catalog remains readable after a failure.
-func (t *table[T]) persist(rows []T, next int64) error {
+func (t *table[T]) persist(rows []T) error {
 	if err := os.MkdirAll(t.dir, 0o750); err != nil {
 		return err
 	}
 	byKey := make(map[string]int64, len(rows))
 	for i := range rows {
 		key := t.key(&rows[i])
-		if err := names.Check("имя", key); err != nil {
+		if err := names.Check("Name", key); err != nil {
 			return err
 		}
 		if id, dup := byKey[key]; dup && id != *t.id(&rows[i]) {
-			return fmt.Errorf("имя %q уже занято", key)
+			return msgs.New("The name «{name}» is already taken", map[string]string{"name": key})
 		}
 		byKey[key] = *t.id(&rows[i])
-	}
-	idx, err := yaml.Marshal(index{NextID: next})
-	if err != nil {
-		return err
-	}
-	if err := writeAtomic(filepath.Join(t.dir, indexFile), idx); err != nil {
-		return err
 	}
 	old := make(map[int64]T, len(t.rows))
 	for _, r := range t.rows {
@@ -174,7 +141,7 @@ func (t *table[T]) persist(rows []T, next int64) error {
 		if ok && reflect.DeepEqual(prev, rows[i]) {
 			continue
 		}
-		data, err := yaml.Marshal(rows[i])
+		data, err := yamlfmt.Marshal(rows[i])
 		if err != nil {
 			return err
 		}
@@ -224,12 +191,23 @@ func (t *table[T]) update(fn func(rows *[]T, newID func() int64) error) error {
 	if err := fn(&rows, newID); err != nil {
 		return err
 	}
-	if err := t.persist(rows, next); err != nil {
+	if err := t.persist(rows); err != nil {
 		return err
 	}
 	t.rows = rows
-	t.next = next
+	t.next = nextNumber(rows, t.id)
 	return nil
+}
+
+// nextNumber returns one more than the largest number among rows, or 1 when there are none.
+func nextNumber[T any](rows []T, id func(*T) *int64) int64 {
+	next := int64(1)
+	for i := range rows {
+		if n := *id(&rows[i]); n >= next {
+			next = n + 1
+		}
+	}
+	return next
 }
 
 // writeAtomic writes a file via a temporary file and rename.

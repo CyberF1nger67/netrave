@@ -11,14 +11,14 @@ func TestMACIsDeterministicAndUnique(t *testing.T) {
 		t.Fatalf("MAC(7,1) = %s", got)
 	}
 	if MAC(7, 1) != MAC(7, 1) {
-		t.Fatal("адрес должен быть стабильным")
+		t.Fatal("address must be stable")
 	}
 	seen := map[string]bool{}
 	for dev := int64(1); dev <= 50; dev++ {
 		for nic := 0; nic < 32; nic++ {
 			m := MAC(dev, nic)
 			if seen[m] {
-				t.Fatalf("повтор адреса %s", m)
+				t.Fatalf("duplicate address %s", m)
 			}
 			seen[m] = true
 		}

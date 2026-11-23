@@ -32,11 +32,11 @@ func TestSPAHandlerServesIndexForNestedRoutes(t *testing.T) {
 	for _, target := range []string{"/", "/labs", "/labs/7/editor", "/labs/folders/3", "/settings"} {
 		rec := spaRequest(t, h, target)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: код %d, ожидался 200", target, rec.Code)
+			t.Fatalf("%s: code %d, expected 200", target, rec.Code)
 		}
 		body, _ := io.ReadAll(rec.Result().Body)
 		if string(body) != "<div id=\"root\"></div>" {
-			t.Fatalf("%s: отдан не index.html: %q", target, body)
+			t.Fatalf("%s: served not index.html: %q", target, body)
 		}
 	}
 }
@@ -51,11 +51,11 @@ func TestSPAHandlerServesStaticFiles(t *testing.T) {
 	} {
 		rec := spaRequest(t, h, target)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: код %d, ожидался 200", target, rec.Code)
+			t.Fatalf("%s: code %d, expected 200", target, rec.Code)
 		}
 		body, _ := io.ReadAll(rec.Result().Body)
 		if string(body) != want {
-			t.Fatalf("%s: тело %q, ожидалось %q", target, body, want)
+			t.Fatalf("%s: body %q, expected %q", target, body, want)
 		}
 	}
 }
@@ -65,7 +65,7 @@ func TestSPAHandlerServesStaticFiles(t *testing.T) {
 func TestSPAHandlerHidesPlaceholderFile(t *testing.T) {
 	h := SPAHandler(fstest.MapFS{placeholder: {Data: nil}})
 	if rec := spaRequest(t, h, "/"+placeholder); rec.Code != http.StatusNotFound {
-		t.Fatalf("/%s: код %d, ожидался 404", placeholder, rec.Code)
+		t.Fatalf("/%s: code %d, expected 404", placeholder, rec.Code)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestSPAHandlerDoesNotHideMissingAssetsOrAPI(t *testing.T) {
 	h := SPAHandler(spaTestFS())
 	for _, target := range []string{"/assets/missing.js", "/api/unknown", "/ws/unknown", "/img/missing.png"} {
 		if rec := spaRequest(t, h, target); rec.Code != http.StatusNotFound {
-			t.Fatalf("%s: код %d, ожидался 404", target, rec.Code)
+			t.Fatalf("%s: code %d, expected 404", target, rec.Code)
 		}
 	}
 }

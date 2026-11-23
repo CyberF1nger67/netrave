@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"netrave/internal/auth"
@@ -50,7 +51,7 @@ func TestDeviceActionsForbiddenWithoutPermission(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
-			t.Fatalf("%s без права: ожидался HTTP 403, получен %d: %s", act, rec.Code, rec.Body.String())
+			t.Fatalf("%s without permission: expected HTTP 403, got %d: %s", act, rec.Code, rec.Body.String())
 		}
 	}
 }
@@ -75,7 +76,7 @@ func TestStartLimitedByRole(t *testing.T) {
 	}
 	defer db.Close()
 	as := auth.New(db)
-	m := qemu.New(db, &config.Config{LabsDir: filepath.Join(t.TempDir(), "labs"), RunDir: filepath.Join(t.TempDir(), "run")}, nil)
+	m := qemu.New(db, &config.Config{LabsDir: filepath.Join(t.TempDir(), "labs"), InstancesDir: filepath.Join(t.TempDir(), "instances"), LogsDir: filepath.Join(t.TempDir(), "logs"), RunDir: filepath.Join(t.TempDir(), "run")}, nil)
 	mux := http.NewServeMux()
 	(&Handler{DB: db, Auth: as, M: m}).Register(mux)
 
@@ -94,7 +95,7 @@ func TestStartLimitedByRole(t *testing.T) {
 	// Two labs where the user is the owner; the first already has a running machine.
 	var rids []int64
 	for i := 0; i < 2; i++ {
-		lab := labtest.Lab(t, db, uid, "lab", "none")
+		lab := labtest.Lab(t, db, uid, "lab"+strconv.Itoa(i), "none")
 		dev := labtest.Device(t, db, lab, labfile.Device{Name: "pc"})
 		res, _ = db.Exec(`INSERT INTO lab_instances(lab_id,user_id) VALUES(?,?)`, lab, uid)
 		inst, _ := res.LastInsertId()
@@ -120,6 +121,6 @@ func TestStartLimitedByRole(t *testing.T) {
 		return rec
 	}
 	if rec := start(rids[1]); rec.Code != http.StatusConflict {
-		t.Fatalf("запуск второй лаборатории: ожидался 409, получен %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("starting second lab: expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

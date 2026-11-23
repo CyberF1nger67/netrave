@@ -65,11 +65,37 @@ function lockKeyboard(on: boolean): void {
   else keyboard.unlock();
 }
 
-function keysym(event: KeyboardEvent): number | null {
+// The guest keyboard is a US layout. A key pressed on another host layout (Cyrillic, German, ...)
+// produces a character the guest keymap cannot type, so such a key is sent as the US character of the
+// same physical key: the guest receives the key that was pressed, whatever the host layout is.
+const US_SYMBOLS: Record<string, [string, string]> = {
+  Backquote: ['`', '~'], Digit1: ['1', '!'], Digit2: ['2', '@'], Digit3: ['3', '#'], Digit4: ['4', '$'],
+  Digit5: ['5', '%'], Digit6: ['6', '^'], Digit7: ['7', '&'], Digit8: ['8', '*'], Digit9: ['9', '('],
+  Digit0: ['0', ')'], Minus: ['-', '_'], Equal: ['=', '+'], BracketLeft: ['[', '{'], BracketRight: [']', '}'],
+  Backslash: ['\\', '|'], Semicolon: [';', ':'], Quote: ["'", '"'], Comma: [',', '<'], Period: ['.', '>'],
+  Slash: ['/', '?'],
+};
+
+export function usCharacter(event: KeyboardEvent): string | null {
+  const letter = /^Key([A-Z])$/.exec(event.code);
+  if (letter) {
+    const upper = event.shiftKey !== event.getModifierState('CapsLock');
+    return upper ? (letter[1] ?? null) : (letter[1] ?? '').toLowerCase();
+  }
+  const pair = US_SYMBOLS[event.code];
+  if (!pair) return null;
+  return event.shiftKey ? pair[1] : pair[0];
+}
+
+export function keysym(event: KeyboardEvent): number | null {
   if (event.key === 'Shift' && event.location === 2) return 0xffe2;
   if (Object.prototype.hasOwnProperty.call(KEY_SPECIAL, event.key)) return KEY_SPECIAL[event.key] ?? null;
   const functionKey = /^F([1-9]|1[0-2])$/.exec(event.key);
   if (functionKey) return 0xffbd + Number.parseInt(functionKey[1] ?? '0', 10);
+  if (event.key.length === 1 && event.key.charCodeAt(0) >= 0x80) {
+    const latin = usCharacter(event);
+    if (latin) return latin.codePointAt(0) ?? null;
+  }
   if (event.key.length === 1 || (event.key.length === 2 && (event.key.codePointAt(0) ?? 0) > 0xffff)) {
     const code = event.key.codePointAt(0) ?? 0;
     return code < 0x100 ? code : 0x01000000 + code;
@@ -198,7 +224,7 @@ export class VNCView {
 
   private send(data: Uint8Array): void {
     const ws = this.ws;
-    if (ws && ws.readyState === 1) ws.send(data);
+    if (ws && ws.readyState === 1) ws.send(data as Uint8Array<ArrayBuffer>);
   }
 
   private onData(chunk: Uint8Array): void {

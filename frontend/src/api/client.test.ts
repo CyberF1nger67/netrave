@@ -14,8 +14,8 @@ describe('api client', () => {
   });
 
   it('throws ApiError with server message', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ error: 'нет права' }), { status: 403 })));
-    await expect(request('GET', '/api/test')).rejects.toMatchObject({ message: 'нет права', status: 403 });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ error: 'no permission' }), { status: 403 })));
+    await expect(request('GET', '/api/test')).rejects.toMatchObject({ message: 'no permission', status: 403 });
     await expect(request('GET', '/api/test')).rejects.toBeInstanceOf(ApiError);
   });
 });

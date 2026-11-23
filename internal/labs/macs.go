@@ -24,7 +24,7 @@ func (h *Handler) nicList(w http.ResponseWriter, r *http.Request) {
 	}
 	var nics int
 	if err := h.DB.QueryRow(`SELECT nics FROM instance_devices WHERE id=?`, rid.rid).Scan(&nics); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	out := make([]nicItem, 0, nics)

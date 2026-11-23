@@ -7,7 +7,7 @@ import { resolve } from 'node:path';
 function componentSource(file: string, name: string): string {
   const text = readFileSync(resolve(__dirname, '..', '..', file), 'utf8');
   const start = text.indexOf(`export function ${name}(`);
-  expect(start, `${name} не найден в ${file}`).toBeGreaterThanOrEqual(0);
+  expect(start, `${name} not found in ${file}`).toBeGreaterThanOrEqual(0);
   const end = text.indexOf('\n}\n', start);
   return text.slice(start, end === -1 ? undefined : end);
 }
@@ -25,11 +25,11 @@ function lastHook(code: string): number {
   return last;
 }
 
-describe('журнал', () => {
-  it('вызывает все хуки до первого раннего возврата', () => {
+describe('logs', () => {
+  it('calls all hooks before the first early return', () => {
     const code = componentSource('features/logs/LogsPage.tsx', 'LogsPage');
     const early = firstEarlyReturn(code);
     if (early === -1) return;
-    expect(lastHook(code), 'хук после раннего return').toBeLessThan(early);
+    expect(lastHook(code), 'hook after early return').toBeLessThan(early);
   });
 });

@@ -6,18 +6,16 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
-	"strconv"
 
+	"netrave/internal/msgs"
 	"netrave/internal/names"
 )
 
-// Image is a folder with disks/ISOs (kind=image) or a layer on top of a parent image (kind=snapshot).
+// Image is a folder with disks and ISOs.
 type Image struct {
 	ID         int64  `yaml:"id"`
 	Name       string `yaml:"name"`
 	Dirname    string `yaml:"dirname"`
-	Kind       string `yaml:"kind"`
-	ParentID   int64  `yaml:"parent_id,omitempty"`
 	DeviceType string `yaml:"device_type,omitempty"`
 	LayoutJSON string `yaml:"layout_json,omitempty"`
 	QemuJSON   string `yaml:"qemu_json,omitempty"`
@@ -51,47 +49,28 @@ type Template struct {
 	VNC VNCQuality `yaml:"vnc"`
 }
 
-// Snapshot is a state snapshot of an instance machine (device_id is the machine's instance row, rid).
-type Snapshot struct {
-	ID        int64  `yaml:"id" json:"id"`
-	DeviceID  int64  `yaml:"device_id" json:"device_id"`
-	Name      string `yaml:"name" json:"name"`
-	CreatedAt int64  `yaml:"created_at" json:"created_at"`
-}
-
 // Store - all catalogs.
 type Store struct {
 	images    *table[Image]
 	templates *table[Template]
-	snapshots *table[Snapshot]
 }
 
 var customIconRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// Open opens the catalog directory. dir contains the images, templates and snapshots folders: in each
-// an entry is a separate YAML file named after the entry, and index.yaml stores the number counter.
+// Open opens the catalog directory. dir contains the images and templates folders: in each
+// an entry is a separate YAML file named after the entry.
 func Open(dir string) (*Store, error) {
-	imgs, _, err := openTable(filepath.Join(dir, "images"),
+	imgs, err := openTable(filepath.Join(dir, "images"),
 		func(r *Image) *int64 { return &r.ID }, func(r *Image) string { return r.Dirname })
 	if err != nil {
 		return nil, err
 	}
-	tpls, _, err := openTable(filepath.Join(dir, "templates"),
+	tpls, err := openTable(filepath.Join(dir, "templates"),
 		func(r *Template) *int64 { return &r.ID }, func(r *Template) string { return r.Name })
 	if err != nil {
 		return nil, err
 	}
-	snaps, _, err := openTable(filepath.Join(dir, "snapshots"),
-		func(r *Snapshot) *int64 { return &r.ID }, snapshotKey)
-	if err != nil {
-		return nil, err
-	}
-	return &Store{images: imgs, templates: tpls, snapshots: snaps}, nil
-}
-
-// snapshotKey is the snapshot file name: the machine and the snapshot name (the name is unique within the machine).
-func snapshotKey(s *Snapshot) string {
-	return strconv.FormatInt(s.DeviceID, 10) + "-" + s.Name
+	return &Store{images: imgs, templates: tpls}, nil
 }
 
 // ---------- images ----------
@@ -112,18 +91,7 @@ func (s *Store) ImageByDirname(dirname string) (Image, bool) {
 	return Image{}, false
 }
 
-// ImageChildren is how many layers depend on the image.
-func (s *Store) ImageChildren(parentID int64) int {
-	n := 0
-	for _, im := range s.images.All() {
-		if im.ParentID == parentID {
-			n++
-		}
-	}
-	return n
-}
-
-// AddImage adds an image, checking folder uniqueness, type and parent; the number is assigned here.
+// AddImage adds an image, checking folder uniqueness and names; the number is assigned here.
 func (s *Store) AddImage(im Image) (int64, error) {
 	if err := checkImage(s, im); err != nil {
 		return 0, err
@@ -132,7 +100,7 @@ func (s *Store) AddImage(im Image) (int64, error) {
 	err := s.images.update(func(rows *[]Image, newID func() int64) error {
 		for _, r := range *rows {
 			if r.Dirname == im.Dirname {
-				return fmt.Errorf("папка образа %q: %w", im.Dirname, ErrExists)
+				return msgs.Wrap(ErrExists, "Image folder «{name}»: {detail}", map[string]string{"name": im.Dirname, "detail": ErrExists.Error()})
 			}
 		}
 		id = newID()
@@ -163,12 +131,8 @@ func (s *Store) UpdateImage(id int64, fn func(*Image) error) error {
 	})
 }
 
-// DeleteImage deletes an image. Layers that depend on it prevent deletion (ON DELETE RESTRICT);
-// templates that referenced it lose the reference (ON DELETE SET NULL).
+// DeleteImage deletes an image. Templates that referenced it lose the reference (ON DELETE SET NULL).
 func (s *Store) DeleteImage(id int64) error {
-	if s.ImageChildren(id) > 0 {
-		return ErrInUse
-	}
 	if err := s.images.update(func(rows *[]Image, _ func() int64) error {
 		found := false
 		kept := (*rows)[:0]
@@ -197,35 +161,17 @@ func (s *Store) DeleteImage(id int64) error {
 	})
 }
 
-// ErrInUse - the entry cannot be deleted while it is referenced.
-var ErrInUse = fmt.Errorf("запись используется")
-
 // ErrExists - an entry with this name or folder already exists.
-var ErrExists = fmt.Errorf("запись уже существует")
+var ErrExists = fmt.Errorf("The record already exists")
 
 func checkImage(s *Store, im Image) error {
-	switch im.Kind {
-	case "image":
-		if im.ParentID != 0 {
-			return fmt.Errorf("образ не может опираться на родителя")
-		}
-	case "snapshot":
-		if im.ParentID == 0 {
-			return fmt.Errorf("слой должен опираться на родительский образ")
-		}
-		if _, ok := s.images.Get(im.ParentID); !ok {
-			return fmt.Errorf("родительский образ %d не найден", im.ParentID)
-		}
-	default:
-		return fmt.Errorf("неизвестный вид образа %q", im.Kind)
-	}
 	if im.Dirname == "" || im.Name == "" {
-		return fmt.Errorf("у образа должны быть имя и папка")
+		return fmt.Errorf("The image must have a name and a folder")
 	}
-	if err := names.Check("папка образа", im.Dirname); err != nil {
+	if err := names.Check("Image folder", im.Dirname); err != nil {
 		return err
 	}
-	return names.Check("имя образа", im.Name)
+	return names.Check("Image name", im.Name)
 }
 
 // ---------- templates ----------
@@ -245,7 +191,7 @@ func (s *Store) AddTemplate(t Template) (int64, error) {
 	err := s.templates.update(func(rows *[]Template, newID func() int64) error {
 		for _, r := range *rows {
 			if r.Name == t.Name {
-				return fmt.Errorf("шаблон %q: %w", t.Name, ErrExists)
+				return msgs.Wrap(ErrExists, "Template «{name}»: {detail}", map[string]string{"name": t.Name, "detail": ErrExists.Error()})
 			}
 		}
 		id = newID()
@@ -270,7 +216,7 @@ func (s *Store) UpdateTemplate(id int64, fn func(*Template) error) error {
 				}
 				for j, r := range *rows {
 					if j != i && r.Name == cp.Name {
-						return fmt.Errorf("шаблон %q: %w", cp.Name, ErrExists)
+						return msgs.Wrap(ErrExists, "Template «{name}»: {detail}", map[string]string{"name": cp.Name, "detail": ErrExists.Error()})
 					}
 				}
 				(*rows)[i] = cp
@@ -296,112 +242,27 @@ func (s *Store) DeleteTemplate(id int64) error {
 
 func (s *Store) checkTemplate(t Template) error {
 	if t.Name == "" {
-		return fmt.Errorf("у шаблона должно быть имя")
+		return fmt.Errorf("The template must have a name")
 	}
-	if err := names.Check("шаблон", t.Name); err != nil {
+	if err := names.Check("Template", t.Name); err != nil {
 		return err
 	}
 	if t.BIOS != "seabios" && t.BIOS != "uefi" {
-		return fmt.Errorf("неизвестный BIOS %q", t.BIOS)
+		return msgs.New("Unknown BIOS «{bios}»", map[string]string{"bios": t.BIOS})
 	}
 	if t.Console != "serial" && t.Console != "vnc" {
-		return fmt.Errorf("неизвестная консоль %q", t.Console)
+		return msgs.New("Unknown console «{console}»", map[string]string{"console": t.Console})
 	}
 	if err := t.VNC.Validate(); err != nil {
 		return err
 	}
 	if t.CustomIcon != "" && !customIconRe.MatchString(t.CustomIcon) {
-		return fmt.Errorf("некорректный хеш иконки")
+		return fmt.Errorf("Invalid icon hash")
 	}
 	if t.ImageID != 0 {
 		if _, ok := s.images.Get(t.ImageID); !ok {
-			return fmt.Errorf("образ %d не найден", t.ImageID)
+			return msgs.New("Image {id} not found", map[string]string{"id": fmt.Sprint(t.ImageID)})
 		}
 	}
 	return nil
-}
-
-// ---------- snapshots ----------
-
-// SnapshotsOf returns the snapshots of an instance machine in creation order.
-func (s *Store) SnapshotsOf(deviceID int64) []Snapshot {
-	var out []Snapshot
-	for _, sn := range s.snapshots.All() {
-		if sn.DeviceID == deviceID {
-			out = append(out, sn)
-		}
-	}
-	return out
-}
-
-// Snapshot returns a snapshot by number.
-func (s *Store) Snapshot(id int64) (Snapshot, bool) { return s.snapshots.Get(id) }
-
-// AddSnapshot adds a snapshot. The name is unique within the machine.
-func (s *Store) AddSnapshot(deviceID int64, name string, createdAt int64) (Snapshot, error) {
-	if err := names.Check("снапшот", name); err != nil {
-		return Snapshot{}, err
-	}
-	var out Snapshot
-	err := s.snapshots.update(func(rows *[]Snapshot, newID func() int64) error {
-		for _, r := range *rows {
-			if r.DeviceID == deviceID && r.Name == name {
-				return fmt.Errorf("снапшот %q: %w", name, ErrExists)
-			}
-		}
-		out = Snapshot{ID: newID(), DeviceID: deviceID, Name: name, CreatedAt: createdAt}
-		*rows = append(*rows, out)
-		return nil
-	})
-	return out, err
-}
-
-// DeleteSnapshot deletes a snapshot.
-func (s *Store) DeleteSnapshot(id int64) error {
-	return s.snapshots.update(func(rows *[]Snapshot, _ func() int64) error {
-		for i, r := range *rows {
-			if r.ID == id {
-				*rows = append((*rows)[:i], (*rows)[i+1:]...)
-				return nil
-			}
-		}
-		return ErrNotFound
-	})
-}
-
-// DropSnapshotsNotIn deletes snapshots of machines that are not in live (their instance rows are gone).
-// Instance row numbers can be reused, so such a snapshot must not be left behind.
-func (s *Store) DropSnapshotsNotIn(live map[int64]bool) error {
-	return s.snapshots.update(func(rows *[]Snapshot, _ func() int64) error {
-		kept := (*rows)[:0]
-		for _, r := range *rows {
-			if live[r.DeviceID] {
-				kept = append(kept, r)
-			}
-		}
-		*rows = kept
-		return nil
-	})
-}
-
-// DeleteSnapshotsOf deletes all snapshots of machines listed in devices (instance rows).
-// Previously this was done by a foreign key cascade when an instance row was deleted.
-func (s *Store) DeleteSnapshotsOf(devices ...int64) error {
-	if len(devices) == 0 {
-		return nil
-	}
-	drop := map[int64]bool{}
-	for _, d := range devices {
-		drop[d] = true
-	}
-	return s.snapshots.update(func(rows *[]Snapshot, _ func() int64) error {
-		kept := (*rows)[:0]
-		for _, r := range *rows {
-			if !drop[r.DeviceID] {
-				kept = append(kept, r)
-			}
-		}
-		*rows = kept
-		return nil
-	})
 }

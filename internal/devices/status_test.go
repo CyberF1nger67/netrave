@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"netrave/internal/auth"
@@ -28,7 +27,7 @@ func TestStatusOnlyOwnInstanceWithRealNumbers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := &config.Config{LabsDir: filepath.Join(dir, "labs"), RunDir: filepath.Join(dir, "run")}
+	cfg := &config.Config{LabsDir: filepath.Join(dir, "labs"), InstancesDir: filepath.Join(dir, "instances"), LogsDir: filepath.Join(dir, "logs"), RunDir: filepath.Join(dir, "run")}
 	as := auth.New(db)
 	h := &Handler{DB: db, Auth: as, M: qemu.New(db, cfg, nil)}
 	mux := http.NewServeMux()
@@ -69,7 +68,11 @@ func TestStatusOnlyOwnInstanceWithRealNumbers(t *testing.T) {
 	}
 
 	// On the user's disk, a stopped machine has a 2 MiB overlay (fully written, not sparse).
-	diskDir := filepath.Join(cfg.LabsDir, strconv.FormatInt(lab, 10), strconv.FormatInt(ridStopped, 10))
+	wd, err := qemu.WorkDir(db, cfg.InstancesDir, ridStopped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskDir := wd.Dir
 	if err := os.MkdirAll(diskDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -77,12 +80,12 @@ func TestStatusOnlyOwnInstanceWithRealNumbers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/labs/"+itoa(lab)+"/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/labs/"+lab+"/status", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: tok})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("статус: ожидался 200, получен %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("status: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var resp struct {
 		Machines []machineStatus `json:"machines"`
@@ -93,7 +96,7 @@ func TestStatusOnlyOwnInstanceWithRealNumbers(t *testing.T) {
 	}
 
 	if len(resp.Machines) != 2 {
-		t.Fatalf("ожидалось 2 машины экземпляра пользователя (без машины администратора), получено %d", len(resp.Machines))
+		t.Fatalf("expected 2 user instance machines (excluding administrator machine), got %d", len(resp.Machines))
 	}
 	byRID := map[int64]machineStatus{}
 	for _, m := range resp.Machines {
@@ -102,37 +105,37 @@ func TestStatusOnlyOwnInstanceWithRealNumbers(t *testing.T) {
 
 	stopped, ok := byRID[ridStopped]
 	if !ok {
-		t.Fatalf("остановленная машина не найдена в ответе: %+v", resp.Machines)
+		t.Fatalf("stopped machine not found in response: %+v", resp.Machines)
 	}
 	if stopped.Running || stopped.CPUPct != 0 || stopped.RAMBytes != 0 || stopped.PID != 0 {
-		t.Fatalf("остановленная машина должна иметь нулевую нагрузку: %+v", stopped)
+		t.Fatalf("stopped machine must have zero load: %+v", stopped)
 	}
 	if stopped.DiskBytes < 2<<20 {
-		t.Fatalf("занятое место машины меньше записанных 2 МиБ: %d", stopped.DiskBytes)
+		t.Fatalf("machine disk usage is less than the 2 MiB written: %d", stopped.DiskBytes)
 	}
 
 	running, ok := byRID[ridRunning]
 	if !ok {
-		t.Fatalf("запущенная машина не найдена в ответе")
+		t.Fatalf("running machine not found in response")
 	}
 	if !running.Running || running.PID != os.Getpid() {
-		t.Fatalf("запущенная машина: ожидался статус running и pid процесса: %+v", running)
+		t.Fatalf("running machine: expected status running and process pid: %+v", running)
 	}
 	if running.RAMBytes == 0 {
-		t.Fatalf("память процесса QEMU должна читаться из /proc, получено 0")
+		t.Fatalf("QEMU process memory must be read from /proc, got 0")
 	}
 	if running.CPUReady {
-		t.Fatalf("загрузка без двух замеров не должна помечаться готовой")
+		t.Fatalf("load without two samples must not be marked ready")
 	}
 
 	if resp.Totals.Machines != 2 || resp.Totals.Running != 1 {
-		t.Fatalf("итоги: ожидалось 2 машины и 1 запущенная, получено %+v", resp.Totals)
+		t.Fatalf("totals: expected 2 machines and 1 running, got %+v", resp.Totals)
 	}
 	if resp.Totals.RAMBytes != running.RAMBytes {
-		t.Fatalf("итоговая ОЗУ должна равняться сумме по машинам: %d != %d", resp.Totals.RAMBytes, running.RAMBytes)
+		t.Fatalf("total RAM must equal the sum over machines: %d != %d", resp.Totals.RAMBytes, running.RAMBytes)
 	}
 	if resp.Totals.DiskBytes != stopped.DiskBytes+running.DiskBytes {
-		t.Fatalf("итоговый диск должен равняться сумме по машинам")
+		t.Fatalf("total disk must equal the sum over machines")
 	}
 }
 
@@ -144,7 +147,7 @@ func TestStatusHiddenWithoutView(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	cfg := &config.Config{LabsDir: filepath.Join(dir, "labs"), RunDir: filepath.Join(dir, "run")}
+	cfg := &config.Config{LabsDir: filepath.Join(dir, "labs"), InstancesDir: filepath.Join(dir, "instances"), LogsDir: filepath.Join(dir, "logs"), RunDir: filepath.Join(dir, "run")}
 	as := auth.New(db)
 	h := &Handler{DB: db, Auth: as, M: qemu.New(db, cfg, nil)}
 	mux := http.NewServeMux()
@@ -160,17 +163,17 @@ func TestStatusHiddenWithoutView(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/labs/"+itoa(lab)+"/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/labs/"+lab+"/status", nil)
 	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: tok})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("без просмотра ожидался 404, получен %d", rec.Code)
+		t.Fatalf("without view permission expected 404, got %d", rec.Code)
 	}
 }
 
 func TestDirAllocatedMissingDirIsZero(t *testing.T) {
 	if n := qemu.DirAllocated(filepath.Join(t.TempDir(), "нет-такого")); n != 0 {
-		t.Fatalf("несуществующий каталог должен давать 0, получено %d", n)
+		t.Fatalf("nonexistent directory must give 0, got %d", n)
 	}
 }

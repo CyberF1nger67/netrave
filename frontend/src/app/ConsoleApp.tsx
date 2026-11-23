@@ -3,15 +3,20 @@ import { labsApi } from '../api/endpoints';
 import type { ConsoleDevice } from '../features/consoles/types';
 import { mountConsoleDock, setDeviceSource } from '../features/consoles/dock';
 import { t } from '../i18n';
-import { LanguageSwitcher } from '../components/LanguageSwitcher';
+import { useAuthStore } from '../stores/auth';
+import { ConsoleMessages } from '../features/notifications/ConsoleMessages';
 import type { ConsoleDock } from '../features/consoles/dock';
 
 export function ConsoleApp() {
   const ref = useRef<ConsoleDock | null>(null);
   const [error, setError] = useState('');
+  // The console window has no shell that loads the session: load it here, so that notifications work.
+  useEffect(() => {
+    if (useAuthStore.getState().status === 'loading') void useAuthStore.getState().bootstrap();
+  }, []);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
-    const labId = Number.parseInt(params.get('lab') ?? '', 10) || 0;
+    const labId = params.get('lab') ?? '';
     const ids = (params.get('ids') ?? params.get('id') ?? '').split(',').map((value) => Number.parseInt(value, 10)).filter((value) => value > 0);
     const active = Number.parseInt(params.get('active') ?? '', 10) || ids[0] || 0;
     if (!ids.length) { setError(t('No machines in the laboratory')); return; }
@@ -47,6 +52,11 @@ export function ConsoleApp() {
     adopt([]);
     return undefined;
   }, []);
-  if (error) return <div style={{ color: '#fff', padding: 24 }}>{error}</div>;
-  return <div className="fixed right-3 top-2 z-[200]"><LanguageSwitcher /></div>;
+  // No language selector here: the console tab shows only the terminal. The message dialog is the only overlay.
+  return (
+    <>
+      {error && <div style={{ color: '#fff', padding: 24 }}>{error}</div>}
+      <ConsoleMessages />
+    </>
+  );
 }

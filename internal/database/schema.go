@@ -4,11 +4,12 @@ package database
 
 // schemaVersion - the schema version this build understands. Databases have no migrations: if the version does not match,
 // the file must be recreated.
-const schemaVersion = 5
+const schemaVersion = 6
 
-// schema creates the full schema from scratch. Lab topology (labs, machines, networks, wires, lab permissions)
-// lives in files (see package labfile), so instances reference it by numeric id without
-// foreign keys: deletion of machines, networks and wires and deletion of labs is done by code. "No reference" is NULL, not 0.
+// schema creates the full schema from scratch. Lab topology (labs, machines, networks, cables, lab permissions)
+// lives in files (see package labfile), so instances reference it by name without foreign keys:
+// deletion of machines, networks and cables and deletion of labs is done by code. "No reference" is NULL, not an empty string.
+// Images are referenced by their folder name.
 const schema = `
 -- Users and sessions -------------------------------------------------------------------------------
 
@@ -77,7 +78,7 @@ CREATE INDEX idx_user_roles_role ON user_roles(role_id);
 
 CREATE TABLE lab_instances (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	lab_id     INTEGER NOT NULL,
+	lab_id     TEXT NOT NULL,
 	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 	created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
 	UNIQUE (lab_id, user_id)
@@ -89,9 +90,9 @@ CREATE INDEX idx_lab_instances_user ON lab_instances(user_id);
 CREATE TABLE instance_devices (
 	id              INTEGER PRIMARY KEY AUTOINCREMENT,
 	instance_id     INTEGER NOT NULL REFERENCES lab_instances(id) ON DELETE CASCADE,
-	device_id       INTEGER NOT NULL,
-	image_id        INTEGER,
-	layer_image_id  INTEGER,
+	device_id       TEXT NOT NULL,
+	image_id        TEXT,
+	layer_image_id  TEXT,
 	image_own       INTEGER NOT NULL DEFAULT 0,
 	machine         TEXT NOT NULL DEFAULT 'pc',
 	cpu             INTEGER NOT NULL DEFAULT 1,
@@ -114,7 +115,7 @@ CREATE INDEX idx_instance_devices_layer ON instance_devices(layer_image_id);
 CREATE TABLE instance_links (
 	id            INTEGER PRIMARY KEY AUTOINCREMENT,
 	instance_id   INTEGER NOT NULL REFERENCES lab_instances(id) ON DELETE CASCADE,
-	connection_id INTEGER NOT NULL,
+	connection_id TEXT NOT NULL,
 	up            INTEGER NOT NULL DEFAULT 1,
 	UNIQUE (instance_id, connection_id)
 );
@@ -122,7 +123,7 @@ CREATE TABLE instance_links (
 CREATE TABLE instance_networks (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
 	instance_id INTEGER NOT NULL REFERENCES lab_instances(id) ON DELETE CASCADE,
-	network_id  INTEGER NOT NULL,
+	network_id  TEXT NOT NULL,
 	subnet      TEXT NOT NULL DEFAULT '',
 	gateway     TEXT NOT NULL DEFAULT '',
 	dhcp_start  TEXT NOT NULL DEFAULT '',

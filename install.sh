@@ -201,35 +201,82 @@ node_ok() {
   fi
 }
 
+# retry runs a command again after a failure: a dropped connection or a partial download
+# is the usual cause, and every step here is safe to repeat.
+retry() {
+  local attempt=1
+  until "$@"; do
+    [ "$attempt" -lt 4 ] || return 1
+    warn "attempt $attempt failed, retrying in $((attempt * 5)) s: $*"
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
+}
+
+# qemu_arch returns the QEMU target of this machine. KVM runs only guests of the host's own
+# architecture, so an aarch64 host gets the aarch64 emulator and firmware, and x86_64 gets the x86 ones.
+qemu_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64)   echo x86_64 ;;
+    aarch64|arm64)  echo aarch64 ;;
+    *)              return 1 ;;
+  esac
+}
+
+# Package names for the host architecture (families: apt, dnf, pacman, xbps, apk).
+# Each list contains the QEMU system emulator, the UEFI firmware, qemu-img, the network
+# tools, dnsmasq and the tools used by this script.
+lab_packages() {
+  local family="$1" arch
+  arch="$(qemu_arch)" || return 1
+  case "$family:$arch" in
+    apt:x86_64)      echo "sudo qemu-system-x86 qemu-utils ovmf iproute2 nftables dnsmasq-base curl ca-certificates xz-utils tar" ;;
+    apt:aarch64)     echo "sudo qemu-system-arm qemu-utils qemu-efi-aarch64 iproute2 nftables dnsmasq-base curl ca-certificates xz-utils tar" ;;
+    dnf:x86_64)      echo "sudo qemu-system-x86 qemu-img edk2-ovmf iproute nftables dnsmasq curl ca-certificates xz tar" ;;
+    dnf:aarch64)     echo "sudo qemu-system-aarch64 qemu-img edk2-aarch64 iproute nftables dnsmasq curl ca-certificates xz tar" ;;
+    pacman:x86_64)   echo "sudo qemu-base qemu-system-x86 qemu-img edk2-ovmf iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    pacman:aarch64)  echo "sudo qemu-system-aarch64 qemu-img edk2-armvirt iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    xbps:x86_64)     echo "sudo qemu edk2-ovmf iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    xbps:aarch64)    echo "sudo qemu edk2-aarch64 iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    apk:x86_64)      echo "sudo qemu-system-x86_64 qemu-img ovmf iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    # Alpine ships the aarch64 firmware in 'edk2' (QEMU_CODE.fd, see qemu/args.go) and the virtio-gpu
+    # module in its own package: without it qemu rejects '-device virtio-gpu-pci'.
+    apk:aarch64)     echo "sudo qemu-system-aarch64 qemu-hw-display-virtio-gpu-pci qemu-img edk2 iproute2 nftables dnsmasq curl ca-certificates xz tar" ;;
+    *)               return 1 ;;
+  esac
+}
+
+# Installs the packages in two steps: first everything is downloaded, then installed from the
+# downloaded files. A failed download therefore stops the script before anything is changed.
 install_system_packages() {
-  case "$1" in
+  local family="$1" pkgs
+  pkgs="$(lab_packages "$family")" || die "no package list for $family on $(uname -m)"
+  case "$family" in
     apt)
-      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update
-      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        qemu-system-x86 qemu-utils iproute2 nftables dnsmasq-base \
-        curl ca-certificates xz-utils tar
+      retry $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update
+      retry $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --download-only $pkgs
+      $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y $pkgs
       ;;
     dnf)
-      $SUDO dnf install -y qemu-system-x86 qemu-img iproute nftables dnsmasq \
-        curl ca-certificates xz tar
+      retry $SUDO dnf install -y $pkgs
       ;;
     pacman)
-      $SUDO pacman -S --needed --noconfirm qemu-base qemu-system-x86 iproute2 \
-        nftables dnsmasq curl ca-certificates xz tar \
-        || die "pacman could not install the packages. If the package database is outdated, run 'pacman -Syu' (partial upgrades on Arch are not supported)"
+      retry $SUDO pacman -Sw --noconfirm $pkgs \
+        || die "pacman could not download the packages. If the package database is outdated, run 'pacman -Syu' (partial upgrades on Arch are not supported)"
+      $SUDO pacman -S --needed --noconfirm $pkgs
       ;;
     xbps)
-      $SUDO xbps-install -Sy qemu iproute2 nftables dnsmasq curl ca-certificates xz tar
+      retry $SUDO xbps-install -Sy $pkgs
       ;;
     apk)
-      $SUDO apk update
-      $SUDO apk add --no-cache qemu-system-x86_64 qemu-img iproute2 nftables dnsmasq \
-        curl ca-certificates xz tar
+      retry $SUDO apk update
+      retry $SUDO apk add --no-cache $pkgs
       ;;
     *)
       return 1
       ;;
   esac
+  verify_lab_tools
 }
 
 install_go_toolchain() {
@@ -340,14 +387,31 @@ ensure_node() {
   note "Node.js: $(node_version_of "$TOOLCHAIN_DIR/node/bin/node") (installed in $TOOLCHAIN_DIR/node)"
 }
 
+# verify_lab_tools stops the script when a required tool is missing after the package step.
+verify_lab_tools() {
+  local tool missing=""
+  for tool in "qemu-system-$(qemu_arch)" qemu-img ip nft dnsmasq curl tar xz; do
+    command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+  done
+  [ -z "$missing" ] || die "after the package installation these are still missing:$missing"
+}
+
 check_lab_tools() {
   local tool missing=""
-  for tool in qemu-system-x86_64 qemu-img ip nft dnsmasq; do
+  for tool in "qemu-system-$(qemu_arch)" qemu-img ip nft dnsmasq; do
     command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
   done
   if [ -n "$missing" ]; then
     warn "not found:$missing. Networking and VMs will not work until they are installed (diagnostics: netrave doctor)"
   fi
+}
+
+# fetch_sources downloads everything the build needs before the build starts: Go modules and
+# npm packages. The build itself then runs without network access.
+fetch_sources() {
+  log "Downloading Go modules and npm packages"
+  retry run_as_builder go -C "$REPO_DIR" mod download
+  retry run_as_builder npm --prefix "$REPO_DIR/frontend" ci --no-audit --no-fund
 }
 
 # Runs a command as the user who invoked sudo, so the build does not leave
@@ -361,10 +425,9 @@ run_as_builder() {
 }
 
 build_frontend() {
-  log "Building frontend (npm ci, npm run build)"
+  log "Building frontend (npm run build)"
   (
     cd "$REPO_DIR/frontend"
-    run_as_builder npm ci --no-audit --no-fund
     run_as_builder npm run build
   )
   [ -f "$REPO_DIR/internal/web/static/index.html" ] \
@@ -524,9 +587,6 @@ main() {
   else
     note "Packages:    install missing ones"
   fi
-  if [ "$(uname -m)" != "x86_64" ]; then
-    warn "the QEMU labs are designed for x86_64 (qemu-system-x86_64)"
-  fi
   if [ ! -e /dev/kvm ]; then
     warn "/dev/kvm is not available: VMs will run without hardware acceleration"
   fi
@@ -544,7 +604,7 @@ main() {
 
   if [ "$SKIP_DEPS" -eq 0 ]; then
     if [ "$family" = "unknown" ]; then
-      warn "distribution ($OS_ID) is not supported automatically. Install manually: qemu-system-x86_64, qemu-img, ip, nft, dnsmasq, curl, xz, tar"
+      warn "distribution ($OS_ID) is not supported automatically. Install manually: qemu-system-$(qemu_arch), qemu-img, OVMF or AAVMF firmware, ip, nft, dnsmasq, curl, xz, tar"
     else
       log "System packages"
       install_system_packages "$family"
@@ -555,6 +615,7 @@ main() {
   ensure_go
   ensure_node
   check_lab_tools
+  fetch_sources
 
   build_frontend
   build_backend

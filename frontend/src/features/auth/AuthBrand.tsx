@@ -1,4 +1,5 @@
 import type { JSX } from 'react';
+import { t } from '../../i18n';
 
 // NetRave wordmark and mark for the sign-in screen, built with Tailwind classes
 // only so the screen remains independent of the shared app chrome.
@@ -16,7 +17,7 @@ export function AuthBrand(): JSX.Element {
       </span>
       <span>
         <span className="block text-[19px] font-extrabold leading-none tracking-tight text-[#e7edf5]">NetRave</span>
-        <span className="mt-1 hidden text-[10.5px] font-medium uppercase tracking-[0.18em] text-[#8b99ad] sm:block">QEMU · KVM · NETWORK</span>
+        <span className="mt-1 hidden text-[10.5px] font-medium uppercase tracking-[0.18em] text-[#8b99ad] sm:block">{t('QEMU · KVM · NETWORK')}</span>
       </span>
     </div>
   );

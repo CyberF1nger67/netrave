@@ -96,17 +96,6 @@ func qmpStatus(path string) (string, error) {
 	return st.Status, nil
 }
 
-// qmpHMP executes a monitor command (savevm, loadvm, delvm) and returns its output.
-func qmpHMP(path, line string, timeout time.Duration) (string, error) {
-	out, err := qmpDo(path, "human-monitor-command", map[string]string{"command-line": line}, timeout)
-	if err != nil {
-		return "", err
-	}
-	var s string
-	_ = json.Unmarshal(out, &s)
-	return s, nil
-}
-
 func stateFromQMP(st string) string {
 	switch st {
 	case "running":

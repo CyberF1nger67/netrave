@@ -27,7 +27,7 @@ func TestUploadIsBlockedWhileImageRunsInInstance(t *testing.T) {
 	}
 	defer db.Close()
 	as := auth.New(db)
-	cfg := &config.Config{ImagesDir: t.TempDir(), LabsDir: t.TempDir(), RunDir: t.TempDir()}
+	cfg := &config.Config{DisksDir: t.TempDir(), LabsDir: t.TempDir(), RunDir: t.TempDir()}
 	m := qemu.New(db, cfg, nil)
 	h := &Handler{DB: db, Auth: as, Cfg: cfg, M: m}
 	mux := http.NewServeMux()
@@ -35,7 +35,7 @@ func TestUploadIsBlockedWhileImageRunsInInstance(t *testing.T) {
 
 	res, _ := db.Exec(`INSERT INTO users(username,password_hash,role) VALUES('admin','x','admin')`)
 	admin, _ := res.LastInsertId()
-	img, err := db.Catalog.AddImage(catalog.Image{Name: "disk1", Dirname: "disk1", Kind: "image"})
+	_, err = db.Catalog.AddImage(catalog.Image{Name: "disk1", Dirname: "disk1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestUploadIsBlockedWhileImageRunsInInstance(t *testing.T) {
 	dev := labtest.Device(t, db, lab, labfile.Device{Name: "pc"})
 	res, _ = db.Exec(`INSERT INTO lab_instances(lab_id,user_id) VALUES(?,?)`, lab, admin)
 	inst, _ := res.LastInsertId()
-	dres, err := db.Exec(`INSERT INTO instance_devices(instance_id,device_id,image_id) VALUES(?,?,?)`, inst, dev, img)
+	dres, err := db.Exec(`INSERT INTO instance_devices(instance_id,device_id,image_id) VALUES(?,?,?)`, inst, dev, "disk1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,11 +64,11 @@ func TestUploadIsBlockedWhileImageRunsInInstance(t *testing.T) {
 	}
 
 	if rec := upload(); rec.Code != http.StatusConflict {
-		t.Fatalf("запущенная машина держит образ: ожидался 409, получен %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("running machine holds image: expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	m.SetRuntime(rid, qemu.Runtime{State: "stopped"})
 	if rec := upload(); rec.Code == http.StatusConflict {
-		t.Fatalf("остановленная машина не должна блокировать образ: %s", rec.Body.String())
+		t.Fatalf("stopped machine must not block image: %s", rec.Body.String())
 	}
 }

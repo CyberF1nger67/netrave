@@ -1,3 +1,4 @@
+import { askConfirm, askText } from '../../stores/dialogs';
 import { useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { imagesApi } from '../../api/endpoints';
@@ -7,12 +8,12 @@ import { fmtBytes } from '../../lib/format';
 import { folderInputProps } from '../../lib/desktop';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { Spinner } from '../../components/ui/Spinner';
-import { t, useLanguageStore } from '../../i18n';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
+import { isValidName, isValidFileName } from '../../lib/names';
 
 const primary = 'border-transparent bg-gradient-to-br from-accent to-accent-2 font-semibold text-on-accent shadow-[0_6px_18px_-6px_rgba(99,102,241,.55)] hover:brightness-110';
 const danger = 'text-bad hover:border-bad hover:bg-bad/10';
 
-const IMAGE_DIR_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const DISK_RE = /\.(qcow2|raw|img|iso)$/i;
 
 export function ImagesPage() {
@@ -28,7 +29,7 @@ export function ImagesPage() {
   const finish = async () => {
     setProgress({ loaded: 1, total: 1, text: t('Loading…') });
     const result = await imagesApi.scan();
-    (result.problems ?? []).forEach((problem) => toast.warning(problem));
+    (result.problems ?? []).forEach((problem) => toast.warning(translateMessage(problem.key, problem.params)));
     await queryClient.invalidateQueries({ queryKey: ['images'] });
   };
 
@@ -55,16 +56,24 @@ export function ImagesPage() {
     }
   };
 
-  /** Files selected with a regular `<input type="file" webkitdirectory>`. */
+  /**
+   * Files selected with a regular `<input type="file" webkitdirectory>`. A folder or file name that
+   * the server would reject is reported before anything is uploaded; names are never changed silently.
+   */
   const uploadFromPicker = async (picked: File[]) => {
     const dir = (picked.find((file) => file.webkitRelativePath)?.webkitRelativePath ?? '').split('/')[0] ?? '';
-    if (!IMAGE_DIR_RE.test(dir)) { toast.error(t('Select image folder')); return; }
+    if (!dir) { toast.error(t('Select image folder')); return; }
     const files = picked
       .map((file) => ({ file, parts: (file.webkitRelativePath || '').split('/') }))
       .filter((item) => item.parts.length === 2 && item.parts[0] === dir && !(item.parts[1] ?? '').startsWith('.') && DISK_RE.test(item.file.name))
-      .map(({ file }) => ({ dir, file }));
+      .map(({ file }) => file);
     if (!files.length) { toast.error(t('No disks')); return; }
-    await send(files);
+
+    if (!isValidName(dir)) { toast.error(`${t('Invalid folder name:')} ${dir}`); return; }
+    const badFile = files.find((file) => !isValidFileName(file.name));
+    if (badFile) { toast.error(`${t('Invalid file name:')} ${badFile.name}`); return; }
+
+    await send(files.map((file) => ({ dir, file })));
   };
 
   /** Opens the folder picker. The field is already created with `webkitdirectory`, so the first click always opens a folder. */
@@ -90,7 +99,7 @@ export function ImagesPage() {
             <button type="button" disabled={busy} onClick={() => void guard(async () => {
               const result = await imagesApi.scan();
               toast.success(`${t('Added:')} ${result.added}, ${t('updated:')} ${result.updated}`);
-              (result.problems ?? []).forEach((problem) => toast.warning(problem));
+              (result.problems ?? []).forEach((problem) => toast.warning(translateMessage(problem.key, problem.params)));
               await queryClient.invalidateQueries({ queryKey: ['images'] });
             })}>{t('Scan image directory')}</button>
           </div>
@@ -109,13 +118,13 @@ export function ImagesPage() {
                 <td>{image.cdroms.length ? image.cdroms.join(', ') : '—'}</td>
                 <td>{fmtBytes(image.size_bytes)}</td><td>{image.used_by ? `${image.used_by} ${t('Device')}` : '—'}</td>
                 {isAdmin && <td><div className="flex flex-wrap items-center gap-1.5 [&>button]:min-h-[30px] [&>button]:px-[11px] [&>button]:py-[5px] [&>button]:text-[13px]">
-                  <button type="button" onClick={() => {
-                    const name = prompt(t('New image name:'), image.name);
+                  <button type="button" onClick={async () => {
+                    const name = await askText({ title: t('New image name:'), initial: image.name, confirmLabel: t('Save') });
                     if (!name) return;
                     void guard(async () => { await imagesApi.rename(image.id, name); await queryClient.invalidateQueries({ queryKey: ['images'] }); });
                   }}>{t('Edit')}</button>
-                  <button type="button" className={danger} onClick={() => {
-                    if (!confirm(`${t('Delete image and its folder?')} (${image.name})`)) return;
+                  <button type="button" className={danger} onClick={async () => {
+                    if (!(await askConfirm({ title: `${t('Delete image and its folder?')} (${image.name})`, danger: true }))) return;
                     void guard(async () => { await imagesApi.remove(image.id); await queryClient.invalidateQueries({ queryKey: ['images'] }); });
                   }}>{t('Delete')}</button>
                 </div></td>}

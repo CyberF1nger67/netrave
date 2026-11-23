@@ -22,6 +22,7 @@ Go-backend является единственным источником ист
 - [Запуск в foreground](#запуск-в-foreground)
 - [Демон](#демон)
 - [Конфигурация](#конфигурация)
+- [Структура данных](#структура-данных)
 - [CLI](#cli)
 - [Диагностика](#диагностика)
 - [Логи](#логи)
@@ -37,11 +38,15 @@ Go-backend является единственным источником ист
 ## Возможности
 
 - Каталог лабораторий с папками, drag-and-drop, экспортом и правами на каждую лабораторию.
-- Визуальный редактор топологии: устройства, сети, кабели, масштаб, выделение, снимки.
-- Управление QEMU/KVM: запуск, остановка, перезапуск, пауза, продолжение, wipe, клонирование.
+- Визуальный редактор топологии: устройства, сети, кабели, масштаб и выделение.
+- Управление QEMU/KVM: запуск, остановка, перезапуск, пауза, продолжение, wipe, клонирование,
+  сохранение остановленной машины как образа.
 - Папки образов, overlay-диски, CD-ROM и QEMU-параметры образов.
-- Serial-терминал, VNC-клиент, общий док консолей и отдельная страница консолей.
+- Serial-терминал (xterm.js), VNC-клиент, общий док консолей и отдельная страница консолей.
 - Каталог шаблонов, библиотека PNG-иконок и пользовательские темы.
+- Сообщения администраторов всем или выбранным пользователям, доставляются в центр уведомлений.
+- Лаборатории можно открыть всем пользователям на просмотр.
+- Слияние одинаковых страниц памяти хоста (KSM или UKSM) и сетевая диагностика.
 - Пользователи, роли, глобальные права, права на лаборатории и журнал аудита.
 - Центр уведомлений в реальном времени через WebSocket с fallback-опросом.
 - Dashboard с живыми счётчиками CPU, ОЗУ, диска и процессов QEMU.
@@ -63,6 +68,7 @@ Go-backend является единственным источником ист
 | CLI | `internal/cli` |
 | Встроенный frontend | `internal/web/static` |
 | Исходники React | `frontend/src` |
+| Хранение данных и журнал событий | `internal/database`, `internal/labfile`, `internal/fstree`, `internal/journal` |
 
 Демон не дублирует бизнес-логику. Он контролирует процесс HTTP-сервера,
 перезапускает его после сбоев и предоставляет небольшой управляющий API через
@@ -78,8 +84,8 @@ Unix-сокет. Вся бизнес-логика остаётся в HTTP-се�
 | Fedora | Red Hat | dnf | systemd |
 | Rocky Linux | Red Hat | dnf | systemd |
 | AlmaLinux | Red Hat | dnf | systemd |
-| Void Linux | Independent | xbps-install | runit, OpenRC |
-| Alpine Linux | Independent | apk | OpenRC, runit |
+| Void Linux | Void | xbps-install | runit, OpenRC |
+| Alpine Linux | Alpine | apk | OpenRC, runit |
 | Arch Linux | Arch | pacman | systemd |
 | Manjaro | Arch | pacman | systemd |
 
@@ -98,11 +104,12 @@ Unix-сокет. Вся бизнес-логика остаётся в HTTP-се�
 
 ## Требования
 
-- Linux x86_64 или aarch64. Проект проверен на x86_64, а лаборатории QEMU
-  рассчитаны на `qemu-system-x86_64`.
-- Go 1.26+ для сборки backend.
-- Node.js 20.19+ или 22.12+ и npm для сборки frontend (требование Vite 7).
-- QEMU/KVM: `qemu-system-x86_64`, `qemu-img`.
+- Linux на x86_64 или arm64 (aarch64). Виртуальные машины работают с KVM и используют
+  эмулятор архитектуры хоста: `qemu-system-x86_64` или `qemu-system-aarch64`.
+  Машины другой архитектуры с KVM не запускаются.
+- Go 1.26.11 или новее для сборки backend (версия закреплена в `go.mod`).
+- Node.js 20.19+ или 22.12+ и npm для сборки frontend (требование Vite).
+- QEMU/KVM: `qemu-system-x86_64` (или `qemu-system-aarch64`), `qemu-img`, UEFI-прошивка (OVMF или AAVMF).
 - Сеть: `ip`, `nftables`, `dnsmasq` для NAT и DHCP.
 - root для TAP-мостов, nftables и сети KVM.
 - `/dev/kvm` для аппаратного ускорения.
@@ -202,7 +209,8 @@ sudo netrave daemon --config /etc/netrave/config.yaml --background
 ```
 
 - Foreground-режим используют systemd, OpenRC и runit.
-- Background-режим отсоединяется от терминала и пишет PID-файл.
+- Background-режим отсоединяется от терминала. Пока демон работает, его PID
+  записан в `run_dir` (`/run/netrave/daemon.pid`).
 - Lock-файл запрещает запуск нескольких демонов: `/run/netrave/daemon.lock`.
 - IPC-сокет: `/run/netrave/daemon.sock` (режим 0660, проверка peer credentials).
 - После неожиданного выхода демон перезапускает HTTP-процесс с настраиваемой
@@ -217,7 +225,7 @@ sudo netrave daemon --config /etc/netrave/config.yaml --background
 ```yaml
 addr: ":8080"
 data_dir: /var/lib/netrave
-images_dir: /var/lib/netrave/images
+disks_dir: /var/lib/netrave/disks
 labs_dir: /var/lib/netrave/labs
 icons_dir: /var/lib/netrave/icons
 db_path: /var/lib/netrave/netrave.db
@@ -227,17 +235,41 @@ restart_sec: 2
 qemu_path: qemu-system-x86_64
 ```
 
-Также конфигурация понимает ключи `themes_dir`, `run_dir`, `tmp_dir`,
-`session_ttl_hours`, `max_upload_mb`, `stop_vms_on_exit`, `init_system`,
-`service_name`, `command` и `settings`.
+Также конфигурация понимает ключи `instances_dir`, `logs_dir`, `themes_dir`,
+`run_dir`, `tmp_dir`, `stop_vms_on_exit`, `init_system`, `service_name` и `command`.
+Раздел `settings` записывается интерфейсом и содержит `session_ttl_hours`,
+`max_upload_mb` и `role_admin_description`.
 
 Приоритет: флаги командной строки, затем конфигурационный файл, затем
 переменные окружения, затем встроенные значения по умолчанию.
 
 Переменные окружения используют префикс `NETRAVE_`: `NETRAVE_ADDR`,
-`NETRAVE_DATA`, `NETRAVE_IMAGES`, `NETRAVE_LABS`, `NETRAVE_ICONS`, `NETRAVE_DB`,
+`NETRAVE_DATA`, `NETRAVE_DISKS`, `NETRAVE_INSTANCES`, `NETRAVE_LABS`, `NETRAVE_LOGS`,
+`NETRAVE_ICONS`, `NETRAVE_DB`,
 `NETRAVE_QEMU`, `NETRAVE_SOCKET`, `NETRAVE_LOG`, `NETRAVE_CONFIG`,
 `NETRAVE_INIT`, `NETRAVE_SERVICE`.
+
+## Структура данных
+
+Всё хранится в каталоге `data_dir` (после установки это `/var/lib/netrave`):
+
+- `netrave.db`: пользователи, роли, права, экземпляры лабораторий и их машины.
+- `labs/`: лаборатории в виде файлов в дереве папок. Каталог — это папка,
+  а `<имя>.yaml` внутри него — лаборатория.
+- `images/` и `templates/`: записи каталога, по одному YAML-файлу на запись.
+- `disks/`: папки с дисками и ISO-файлы (`disks_dir`).
+- `instances/<владелец>/<лаба>/<устройство>/`: рабочие диски машин пользователей.
+- `logs/<владелец>/<лаба>/<устройство>.log`: лог QEMU каждой машины.
+- `icons/` и `themes/`: загруженные значки и темы.
+- `journal.jsonl`: журнал событий, который показывается на странице «Логи».
+
+Правила:
+
+- Работающую лабораторию нельзя переименовать. Работающую машину нельзя
+  переименовать и сменить ей значок. Сначала остановите машины.
+- При переименовании лаборатории или машины её рабочие диски переносятся, а логи QEMU удаляются.
+- При удалении пользователя его машины останавливаются, а рабочие файлы и логи удаляются.
+- Базы и данные прежних версий не обновляются: их нужно пересоздать.
 
 ## CLI
 
@@ -281,9 +313,9 @@ JSON.
 
 ## Логи
 
-- Файл: `/var/log/netrave/netrave.log`
-- systemd: `journalctl -u netrave -f`
-- IPC: `netrave logs -n 200`
+- Журнал событий: страница «Логи» в веб-интерфейсе или `GET /api/logs`. Хранится в `journal.jsonl`.
+- Логи машин: `logs/<владелец>/<лаба>/<устройство>.log`. Хвост лога показывается, когда машина не запускается.
+- Демон: `/var/log/netrave/netrave.log`, `journalctl -u netrave -f`, `netrave logs -n 200`.
 - Логи демона структурированы в JSON (`log/slog`).
 
 ## Удаление
@@ -310,7 +342,8 @@ sudo netrave uninstall --purge --yes
 - HTTP-сервер отправляет строгий Content-Security-Policy.
 - Загрузки проверяются на клиенте и на сервере.
 - Секреты не пишутся в логи.
-- Файлы сервиса и конфигурации используют ограничительные права (`0644`, `0640`, `0750`).
+- Файл конфигурации создаётся с правами `0640`, каталоги данных — с `0750`;
+  unit systemd — с `0644`.
 
 ## Устранение неполадок
 
@@ -326,10 +359,9 @@ sudo netrave uninstall --purge --yes
 ## Тестирование
 
 ```bash
-go test ./...
+make test     # check-i18n.py, go test ./..., проверка типов и unit-тесты frontend
+make check    # make test + gofmt -l . + go vet ./...
 cd frontend
-npm run typecheck
-npm test
 npm run e2e   # нужен запущенный сервер и NETRAVE_PASSWORD; без него тесты пропускаются
 ```
 
@@ -338,6 +370,8 @@ npm run e2e   # нужен запущенный сервер и NETRAVE_PASSWORD
 Каталог `tools/` содержит диагностические и тестовые скрипты, которые не входят
 в сборку:
 
+- `check-i18n.py` (запускается через `make test`) проверяет, что все пользовательские
+  сообщения Go-кода есть в `EN_KEYS` и в `frontend/locales/ru.yaml`.
 - `instances-sql-check.py` проверяет все SQL-запросы из Go-кода по текущей схеме
   на in-memory SQLite.
 - `l2-selftest.py` проверяет модель L2-сети на реальном ядре Linux без QEMU.

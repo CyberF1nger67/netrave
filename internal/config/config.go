@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+	"netrave/internal/hostarch"
+	"netrave/internal/msgs"
+	"netrave/internal/yamlfmt"
 )
 
 // Settings - system settings the administrator changes in the UI. Stored in the "settings"
@@ -32,7 +35,7 @@ const (
 )
 
 // ErrNoConfigFile - settings cannot be saved: the process was started without a configuration file (-config).
-var ErrNoConfigFile = errors.New("не задан файл конфигурации (-config): настройки не сохранены")
+var ErrNoConfigFile = errors.New("No configuration file (-config): the settings were not saved")
 
 // settingsMu protects Settings in all Config instances.
 var settingsMu sync.RWMutex
@@ -131,14 +134,14 @@ func (c *Config) save(next Settings) error {
 		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode, Tag: "!!map"}}}
 	}
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return fmt.Errorf("config %s: корень файла должен быть отображением", c.ConfigPath)
+		return msgs.New("Config {path}: the file root must be a mapping", map[string]string{"path": c.ConfigPath})
 	}
 	var sec yaml.Node
 	if err := sec.Encode(next); err != nil {
 		return err
 	}
 	setMappingKey(doc.Content[0], "settings", &sec)
-	out, err := yaml.Marshal(&doc)
+	out, err := yamlfmt.Marshal(&doc)
 	if err != nil {
 		return err
 	}
@@ -168,8 +171,10 @@ func setMappingKey(m *yaml.Node, key string, value *yaml.Node) {
 type Config struct {
 	Addr          string `json:"addr" yaml:"addr"`
 	DataDir       string `json:"data_dir" yaml:"data_dir"`
-	ImagesDir     string `json:"images_dir" yaml:"images_dir"`
+	DisksDir      string `json:"disks_dir" yaml:"disks_dir"`
 	LabsDir       string `json:"labs_dir" yaml:"labs_dir"`
+	InstancesDir  string `json:"instances_dir" yaml:"instances_dir"`
+	LogsDir       string `json:"logs_dir" yaml:"logs_dir"`
 	IconsDir      string `json:"icons_dir" yaml:"icons_dir"`
 	ThemesDir     string `json:"themes_dir" yaml:"themes_dir"`
 	RunDir        string `json:"run_dir" yaml:"run_dir"`
@@ -201,7 +206,7 @@ func defaults() *Config {
 	c := &Config{
 		Addr:        envOr("NETRAVE_ADDR", ":8080"),
 		DataDir:     data,
-		QEMUPath:    envOr("NETRAVE_QEMU", "qemu-system-x86_64"),
+		QEMUPath:    envOr("NETRAVE_QEMU", hostarch.QEMUBinary()),
 		ConfigPath:  envOr("NETRAVE_CONFIG", ""),
 		SocketPath:  envOr("NETRAVE_SOCKET", ""),
 		LogFile:     envOr("NETRAVE_LOG", ""),
@@ -210,8 +215,10 @@ func defaults() *Config {
 		Command:     "",
 		ServiceName: envOr("NETRAVE_SERVICE", "netrave"),
 	}
-	c.ImagesDir = envOr("NETRAVE_IMAGES", "")
+	c.DisksDir = envOr("NETRAVE_DISKS", "")
 	c.LabsDir = envOr("NETRAVE_LABS", "")
+	c.InstancesDir = envOr("NETRAVE_INSTANCES", "")
+	c.LogsDir = envOr("NETRAVE_LOGS", "")
 	c.IconsDir = envOr("NETRAVE_ICONS", "")
 	c.DBPath = envOr("NETRAVE_DB", "")
 	c.finish()
@@ -228,8 +235,10 @@ func (c *Config) rebaseDerived(oldData string) {
 		}
 		return current
 	}
-	c.ImagesDir = rebase(c.ImagesDir, "images")
+	c.DisksDir = rebase(c.DisksDir, "disks")
 	c.LabsDir = rebase(c.LabsDir, "labs")
+	c.InstancesDir = rebase(c.InstancesDir, "instances")
+	c.LogsDir = rebase(c.LogsDir, "logs")
 	c.IconsDir = rebase(c.IconsDir, "icons")
 	c.ThemesDir = rebase(c.ThemesDir, "themes")
 	c.DBPath = rebase(c.DBPath, "netrave.db")
@@ -240,11 +249,17 @@ func (c *Config) rebaseDerived(oldData string) {
 }
 
 func (c *Config) finish() {
-	if c.ImagesDir == "" {
-		c.ImagesDir = filepath.Join(c.DataDir, "images")
+	if c.DisksDir == "" {
+		c.DisksDir = filepath.Join(c.DataDir, "disks")
 	}
 	if c.LabsDir == "" {
 		c.LabsDir = filepath.Join(c.DataDir, "labs")
+	}
+	if c.InstancesDir == "" {
+		c.InstancesDir = filepath.Join(c.DataDir, "instances")
+	}
+	if c.LogsDir == "" {
+		c.LogsDir = filepath.Join(c.DataDir, "logs")
 	}
 	if c.IconsDir == "" {
 		c.IconsDir = filepath.Join(c.DataDir, "icons")
@@ -332,11 +347,13 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.SetOutput(os.Stderr)
 	fs.StringVar(&c.Addr, "addr", c.Addr, "HTTP listen address")
 	fs.StringVar(&c.DataDir, "data", c.DataDir, "data directory")
-	fs.StringVar(&c.ImagesDir, "images", c.ImagesDir, "image directory")
+	fs.StringVar(&c.DisksDir, "disks", c.DisksDir, "disk image directory")
 	fs.StringVar(&c.LabsDir, "labs", c.LabsDir, "lab directory")
+	fs.StringVar(&c.InstancesDir, "instances", c.InstancesDir, "instance working directory")
+	fs.StringVar(&c.LogsDir, "logs", c.LogsDir, "log directory")
 	fs.StringVar(&c.IconsDir, "icons", c.IconsDir, "icon directory")
 	fs.StringVar(&c.DBPath, "db", c.DBPath, "SQLite database path")
-	fs.StringVar(&c.QEMUPath, "qemu", c.QEMUPath, "qemu-system-x86_64 path")
+	fs.StringVar(&c.QEMUPath, "qemu", c.QEMUPath, "path to the QEMU system emulator of this host")
 	fs.StringVar(&c.SocketPath, "socket", c.SocketPath, "daemon Unix socket path")
 	fs.StringVar(&c.LogFile, "log", c.LogFile, "daemon log file")
 	fs.StringVar(&c.InitSystem, "init", c.InitSystem, "init system override (systemd, openrc, runit)")
@@ -355,7 +372,7 @@ func ParseArgs(args []string) (*Config, error) {
 
 // EnsureDirs creates all runtime directories with restrictive permissions.
 func (c *Config) EnsureDirs() error {
-	for _, dir := range []string{c.DataDir, c.ImagesDir, c.LabsDir, c.IconsDir, c.ThemesDir, c.RunDir, c.TmpDir, filepath.Dir(c.LogFile)} {
+	for _, dir := range []string{c.DataDir, c.DisksDir, c.LabsDir, c.InstancesDir, c.LogsDir, c.IconsDir, c.ThemesDir, c.RunDir, c.TmpDir, filepath.Dir(c.LogFile)} {
 		if dir == "" || dir == "." {
 			continue
 		}

@@ -3,7 +3,7 @@
   * static files. The keys match `DeviceIcons` on the server and are stored in
   * `device.icon`/`template.icon`, so they must not be renamed.
  */
-export interface StandardIcon {
+interface StandardIcon {
   key: string;
   label: string;
   src: string;

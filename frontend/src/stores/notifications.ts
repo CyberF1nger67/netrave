@@ -22,6 +22,8 @@ interface NotificationsState {
   remove: (id: number) => Promise<void>;
   readAll: () => Promise<void>;
   clearRead: () => Promise<void>;
+  /** Adds a message that is shown only in this browser (for example, an error toast). */
+  addLocal: (level: NotificationItem['level'], title: string) => void;
 }
 
 let ws: WebSocket | null = null;
@@ -29,6 +31,8 @@ let retryTimer: number | null = null;
 let pollTimer: number | null = null;
 let retry = 1000;
 let started = false;
+// Client-side items get negative ids so they never clash with server ids.
+let localSeq = -1;
 
 function currentUserID(): number | null {
   return useAuthStore.getState().user?.id ?? null;
@@ -144,9 +148,11 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       const response = await notificationsApi.list(FETCH_LIMIT);
       // The response may arrive after a logout or an account switch.
       if (!sameUser(uid)) return;
+      // Client-side items survive a refresh: they exist only in this browser.
+      const local = get().items.filter((item) => item.id < 0);
       set({
-        items: response.items,
-        unread: response.unread,
+        items: [...response.items, ...local],
+        unread: response.unread + local.filter((item) => !item.read).length,
         categories: response.categories,
         loaded: true,
       });
@@ -191,6 +197,7 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       items: state.items.map((entry) => (entry.id === id ? { ...entry, read } : entry)),
       unread: Math.max(0, state.unread + (read ? -1 : 1)),
     }));
+    if (id < 0) return;
     try {
       await notificationsApi.setRead(id, read);
     } catch {
@@ -205,6 +212,7 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       items: state.items.filter((entry) => entry.id !== id),
       unread: item.read ? state.unread : Math.max(0, state.unread - 1),
     }));
+    if (id < 0) return;
     try {
       await notificationsApi.remove(id);
     } catch {
@@ -224,6 +232,13 @@ export const useNotificationsStore = create<NotificationsState>((set, get) => ({
       // A refresh below restores the authoritative state.
     }
     await get().refresh();
+  },
+  addLocal: (level, title) => {
+    const item: NotificationItem = {
+      id: localSeq--, level, category: 'system', title, body: '', link: '', read: false,
+      created_at: Math.floor(Date.now() / 1000),
+    };
+    set((state) => ({ items: [item, ...state.items].slice(0, FETCH_LIMIT), unread: state.unread + 1 }));
   },
   clearRead: async () => {
     if (!get().items.some((item) => item.read)) return;

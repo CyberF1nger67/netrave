@@ -5,37 +5,38 @@
 package labtest
 
 import (
-	"fmt"
 	"testing"
 
 	"netrave/internal/database"
+	"netrave/internal/hostarch"
 	"netrave/internal/labfile"
+	"netrave/internal/msgs"
 )
 
-// Lab creates a lab owned by owner with public level public (empty - "none") and returns its id.
-func Lab(t testing.TB, db *database.DB, owner int64, name, public string) int64 {
+// Lab creates a lab owned by owner with public level public (empty - "none") and returns its name.
+func Lab(t testing.TB, db *database.DB, owner int64, name, public string) string {
 	t.Helper()
 	if public == "" {
 		public = "none"
 	}
 	saved, err := db.Labs.Save(labfile.Lab{OwnerID: owner, Name: name, PublicLevel: public, CanvasJSON: "{}"})
 	if err != nil {
-		t.Fatalf("создание лаборатории: %v", err)
+		t.Fatalf("lab creation: %v", err)
 	}
-	return saved.ID
+	return saved.Name
 }
 
-// Device adds a machine to the lab and returns its id. Empty settings are filled with default
+// Device adds a machine to the lab and returns its name. Empty settings are filled with default
 // values, as when creating a machine in the application (otherwise the CHECK constraints in the
 // instance table fail).
-func Device(t testing.TB, db *database.DB, lab int64, d labfile.Device) int64 {
+func Device(t testing.TB, db *database.DB, lab string, d labfile.Device) string {
 	t.Helper()
 	defaults := []struct {
 		empty *string
 		value string
 	}{
-		{&d.Arch, "x86_64"}, {&d.Machine, "pc"}, {&d.NICModel, "virtio-net-pci"}, {&d.DiskBus, "virtio"},
-		{&d.BIOS, "seabios"}, {&d.Console, "serial"}, {&d.IfaceType, "ens"},
+		{&d.Arch, hostarch.QEMUArch()}, {&d.Machine, hostarch.DefaultMachine()}, {&d.NICModel, "virtio-net-pci"}, {&d.DiskBus, "virtio"},
+		{&d.BIOS, hostarch.DefaultBIOS()}, {&d.Console, "serial"}, {&d.IfaceType, "ens"},
 	}
 	for _, f := range defaults {
 		if *f.empty == "" {
@@ -56,39 +57,39 @@ func Device(t testing.TB, db *database.DB, lab int64, d labfile.Device) int64 {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("добавление машины: %v", err)
+		t.Fatalf("machine add: %v", err)
 	}
-	return got.Devices[len(got.Devices)-1].ID
+	return got.Devices[len(got.Devices)-1].Name
 }
 
-// Network adds a network to the lab and returns its id.
-func Network(t testing.TB, db *database.DB, lab int64, n labfile.Network) int64 {
+// Network adds a network to the lab and returns its name.
+func Network(t testing.TB, db *database.DB, lab string, n labfile.Network) string {
 	t.Helper()
 	got, err := db.Labs.Update(lab, func(l *labfile.Lab) error {
 		l.Networks = append(l.Networks, n)
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("добавление сети: %v", err)
+		t.Fatalf("network add: %v", err)
 	}
-	return got.Networks[len(got.Networks)-1].ID
+	return got.Networks[len(got.Networks)-1].Name
 }
 
-// Connection adds a cable to the lab and returns its id. The ends are machines and networks of this lab.
-func Connection(t testing.TB, db *database.DB, lab int64, c labfile.Connection) int64 {
+// Connection adds a cable to the lab and returns its key. The ends are machines and networks of this lab.
+func Connection(t testing.TB, db *database.DB, lab string, c labfile.Connection) string {
 	t.Helper()
 	got, err := db.Labs.Update(lab, func(l *labfile.Lab) error {
 		l.Connections = append(l.Connections, c)
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("добавление провода: %v", err)
+		t.Fatalf("cable add: %v", err)
 	}
-	return got.Connections[len(got.Connections)-1].ID
+	return got.Connections[len(got.Connections)-1].Key()
 }
 
 // Perm sets a user's permission on the lab (value=false - explicit deny).
-func Perm(t testing.TB, db *database.DB, lab, uid int64, perm string, value bool) {
+func Perm(t testing.TB, db *database.DB, lab string, uid int64, perm string, value bool) {
 	t.Helper()
 	if _, err := db.Labs.Update(lab, func(l *labfile.Lab) error {
 		for i := range l.Permissions {
@@ -100,33 +101,33 @@ func Perm(t testing.TB, db *database.DB, lab, uid int64, perm string, value bool
 		l.Permissions = append(l.Permissions, labfile.Permission{UserID: uid, Perm: perm, Value: value})
 		return nil
 	}); err != nil {
-		t.Fatalf("право лаборатории: %v", err)
+		t.Fatalf("lab permission: %v", err)
 	}
 }
 
 // Public changes the lab's public level.
-func Public(t testing.TB, db *database.DB, lab int64, level string) {
+func Public(t testing.TB, db *database.DB, lab string, level string) {
 	t.Helper()
 	if _, err := db.Labs.Update(lab, func(l *labfile.Lab) error {
 		l.PublicLevel = level
 		return nil
 	}); err != nil {
-		t.Fatalf("публичный уровень: %v", err)
+		t.Fatalf("public level: %v", err)
 	}
 }
 
 // Set modifies a lab machine with fn (for example, nics or icon).
-func Set(t testing.TB, db *database.DB, lab int64, devID int64, fn func(*labfile.Device)) {
+func Set(t testing.TB, db *database.DB, lab string, devName string, fn func(*labfile.Device)) {
 	t.Helper()
 	if _, err := db.Labs.Update(lab, func(l *labfile.Lab) error {
 		for i := range l.Devices {
-			if l.Devices[i].ID == devID {
+			if l.Devices[i].Name == devName {
 				fn(&l.Devices[i])
 				return nil
 			}
 		}
-		return fmt.Errorf("машина %d не найдена", devID)
+		return msgs.New("Machine {name} not found", map[string]string{"name": devName})
 	}); err != nil {
-		t.Fatalf("изменение машины: %v", err)
+		t.Fatalf("machine change: %v", err)
 	}
 }

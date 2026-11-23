@@ -31,7 +31,7 @@ func TestUserRolePermsInList(t *testing.T) {
 	adminID, _ := res.LastInsertId()
 	res, _ = db.Exec(`INSERT INTO users(username,password_hash,role) VALUES('u1','x','user')`)
 	uid, _ := res.LastInsertId()
-	res, _ = db.Exec(`INSERT INTO roles(name) VALUES('Наблюдатель')`)
+	res, _ = db.Exec(`INSERT INTO roles(name) VALUES('Observer')`)
 	roleID, _ := res.LastInsertId()
 	for _, p := range []string{"images", "logs"} {
 		if _, err := db.Exec(`INSERT INTO role_permissions(role_id,permission) VALUES(?,?)`, roleID, p); err != nil {
@@ -50,7 +50,7 @@ func TestUserRolePermsInList(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("список пользователей: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("user list: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	var list []struct {
 		ID        int64    `json:"id"`
@@ -60,12 +60,12 @@ func TestUserRolePermsInList(t *testing.T) {
 	for _, u := range list {
 		if u.ID == uid {
 			if len(u.RolePerms) != 2 || u.RolePerms[0] != "images" || u.RolePerms[1] != "logs" {
-				t.Fatalf("права роли в списке: %v", u.RolePerms)
+				t.Fatalf("role permissions in list: %v", u.RolePerms)
 			}
 			return
 		}
 	}
-	t.Fatal("пользователь не найден в списке")
+	t.Fatal("user not found in list")
 }
 
 func itoa(n int64) string { b, _ := json.Marshal(n); return string(b) }
@@ -110,33 +110,33 @@ func TestUserUpdateNotificationTargetsChangedAccount(t *testing.T) {
 	}
 
 	if rec := call("/api/users/"+itoa(targetID), map[string]any{"disabled": true}); rec.Code != http.StatusOK {
-		t.Fatalf("изменение пользователя: HTTP %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("user update: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := count(targetID); got != 1 {
-		t.Fatalf("целевой пользователь должен получить одно уведомление, получил %d", got)
+		t.Fatalf("target user should receive one notification, got %d", got)
 	}
 	if got := count(actorID); got != 0 {
-		t.Fatalf("инициатор не должен получать уведомление о чужом аккаунте, получил %d", got)
+		t.Fatalf("initiator should not receive a notification about another account, got %d", got)
 	}
 	if got := count(otherID); got != 0 {
-		t.Fatalf("другой администратор не должен получать уведомление, получил %d", got)
+		t.Fatalf("another administrator should not receive a notification, got %d", got)
 	}
 	var title, body string
 	title, body = lastNote(svc, targetID)
-	if title != "Ваш аккаунт изменён" || !strings.Contains(body, "boss") {
-		t.Fatalf("некорректное уведомление: %q / %q", title, body)
+	if title != "Your account changed" || lastParams(svc, targetID)["user"] != "boss" {
+		t.Fatalf("incorrect notification: %q / %q", title, body)
 	}
 
 	// The administrator's own permissions: the notification refers to their account.
-	if rec := call("/api/users/"+itoa(actorID), map[string]any{"password": "новый-пароль-1", "confirm": "новый-пароль-1"}); rec.Code != http.StatusOK {
-		t.Fatalf("смена своего пароля: HTTP %d: %s", rec.Code, rec.Body.String())
+	if rec := call("/api/users/"+itoa(actorID), map[string]any{"password": "new-password-1", "confirm": "new-password-1"}); rec.Code != http.StatusOK {
+		t.Fatalf("own password change: HTTP %d: %s", rec.Code, rec.Body.String())
 	}
 	if got := count(actorID); got != 1 {
-		t.Fatalf("при изменении собственных прав уведомление должно прийти себе, получено %d", got)
+		t.Fatalf("when changing own permissions the notification should go to self, got %d", got)
 	}
 	title, body = lastNote(svc, actorID)
-	if title != "Вы изменили свой аккаунт" || !strings.Contains(body, "собственный") {
-		t.Fatalf("некорректное уведомление о себе: %q / %q", title, body)
+	if title != "You changed your account" || !strings.Contains(lastParams(svc, actorID)["by_key"], "your own account") {
+		t.Fatalf("incorrect self-notification: %q / %q", title, body)
 	}
 }
 
@@ -148,4 +148,13 @@ func lastNote(svc *notify.Service, uid int64) (string, string) {
 	}
 	last := items[len(items)-1]
 	return last.Title, last.Body
+}
+
+// lastParams returns the parameters of the newest notification of a user.
+func lastParams(svc *notify.Service, uid int64) map[string]string {
+	items := svc.Snapshot(uid)
+	if len(items) == 0 {
+		return nil
+	}
+	return items[len(items)-1].Params
 }

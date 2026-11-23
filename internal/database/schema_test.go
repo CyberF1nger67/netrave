@@ -25,11 +25,11 @@ func TestSchemaCreatesFreshDatabaseAtCurrentVersion(t *testing.T) {
 	db := openTemp(t)
 	var ver int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil || ver != schemaVersion {
-		t.Fatalf("версия схемы: %d, %v", ver, err)
+		t.Fatalf("schema version: %d, %v", ver, err)
 	}
 	// Installation creates no templates: the catalog is filled only by the user or by import.
 	if n := len(db.Catalog.Templates()); n != 0 {
-		t.Fatalf("шаблонов в новой установке: %d, ожидалось 0", n)
+		t.Fatalf("templates in new install: %d, expected 0", n)
 	}
 }
 
@@ -43,14 +43,14 @@ func TestSchemaRejectsOtherVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	db.Close()
-	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "создайте базу заново") {
-		t.Fatalf("старая версия должна отклоняться, получено: %v", err)
+	if _, err := Open(path); err == nil || !strings.Contains(err.Error(), "recreate the database") {
+		t.Fatalf("old version must be rejected, got: %v", err)
 	}
 }
 
 func TestDeletedTemplateImageBecomesNull(t *testing.T) {
 	db := openTemp(t)
-	img, err := db.Catalog.AddImage(catalog.Image{Name: "disk", Dirname: "disk", Kind: "image"})
+	img, err := db.Catalog.AddImage(catalog.Image{Name: "disk", Dirname: "disk"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,31 +63,14 @@ func TestDeletedTemplateImageBecomesNull(t *testing.T) {
 	}
 	got, _ := db.Catalog.Template(tpl)
 	if got.ImageID != 0 {
-		t.Fatalf("после удаления образа ссылка шаблона должна сброситься, осталась %d", got.ImageID)
+		t.Fatalf("after image deletion the template reference must be reset, remained %d", got.ImageID)
 	}
 }
 
 func TestTemplateRejectsUnknownImage(t *testing.T) {
 	db := openTemp(t)
 	if _, err := db.Catalog.AddTemplate(catalog.Template{Name: "t0", Arch: "x86_64", BIOS: "seabios", Console: "serial", ImageID: 999}); err == nil {
-		t.Fatal("ссылка на несуществующий образ должна отклоняться")
-	}
-}
-
-func TestSnapshotImageNeedsParent(t *testing.T) {
-	db := openTemp(t)
-	if _, err := db.Catalog.AddImage(catalog.Image{Name: "s", Dirname: "s1", Kind: "snapshot"}); err == nil {
-		t.Fatal("слой без родителя должен отклоняться")
-	}
-	base, err := db.Catalog.AddImage(catalog.Image{Name: "base", Dirname: "base", Kind: "image"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Catalog.AddImage(catalog.Image{Name: "s", Dirname: "s2", Kind: "snapshot", ParentID: base}); err != nil {
-		t.Fatalf("корректный слой: %v", err)
-	}
-	if _, err := db.Catalog.AddImage(catalog.Image{Name: "x", Dirname: "x1", Kind: "image", ParentID: base}); err == nil {
-		t.Fatal("образ с родителем, но не слой, должен отклоняться")
+		t.Fatal("reference to a nonexistent image must be rejected")
 	}
 }
 
@@ -100,10 +83,10 @@ func TestInstanceDevicesRejectUnknownBIOS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev1 := saved.Devices[0].ID
-	res, _ := db.Exec(`INSERT INTO lab_instances(lab_id,user_id) VALUES(?,1)`, saved.ID)
+	dev1 := saved.Devices[0].Name
+	res, _ := db.Exec(`INSERT INTO lab_instances(lab_id,user_id) VALUES(?,1)`, saved.Name)
 	inst, _ := res.LastInsertId()
 	if _, err := db.Exec(`INSERT INTO instance_devices(instance_id,device_id,bios) VALUES(?,?,'coreboot')`, inst, dev1); err == nil {
-		t.Fatal("неизвестный BIOS должен отклоняться")
+		t.Fatal("unknown BIOS must be rejected")
 	}
 }

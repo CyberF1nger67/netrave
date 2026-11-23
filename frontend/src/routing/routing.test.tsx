@@ -41,21 +41,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe('защита маршрутов', () => {
-  it('гостя перенаправляет на вход и запоминает исходный адрес', async () => {
+describe('route guards', () => {
+  it('redirects a guest to sign-in and remembers the original address', async () => {
     const router = renderAt('/users');
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
     expect(router.state.location.state).toEqual({ from: '/users' });
   });
 
-  it('после входа возвращает пользователя на исходную страницу', async () => {
+  it('after sign-in returns the user to the original page', async () => {
     const router = renderAt('/users');
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
     signIn(admin);
     await waitFor(() => expect(router.state.location.pathname).toBe('/users'));
   });
 
-  it('при истечении сессии уводит на вход и помечает её как истёкшую', async () => {
+  it('on session expiry redirects to sign-in and marks the session as expired', async () => {
     signIn(admin);
     const router = renderAt('/labs');
     await waitFor(() => expect(router.state.location.pathname).toBe('/labs'));
@@ -65,38 +65,38 @@ describe('защита маршрутов', () => {
     expect(router.state.location.state).toEqual({ from: '/labs' });
   });
 
-  it('пользователь без права не попадает в раздел и возвращается в лаборатории', async () => {
+  it('a user without permission is kept out of the section and returned to labs', async () => {
     signIn(plain);
     const router = renderAt('/users');
     await waitFor(() => expect(router.state.location.pathname).toBe('/labs'));
   });
 
-  it('уже вошедшего пользователя не пускает на страницу входа', async () => {
+  it('does not let an already signed-in user onto the sign-in page', async () => {
     signIn(admin);
     const router = renderAt('/login');
     await waitFor(() => expect(router.state.location.pathname).toBe('/labs'));
   });
 
-  it('корень открывает лаборатории', async () => {
+  it('root opens labs', async () => {
     signIn(admin);
     const router = renderAt('/');
     await waitFor(() => expect(router.state.location.pathname).toBe('/labs'));
   });
 });
 
-describe('404 и числовой адрес редактора', () => {
-  it('неизвестный адрес показывает страницу 404 внутри оболочки', async () => {
+describe('404 and numeric editor address', () => {
+  it('an unknown address shows the 404 page inside the shell', async () => {
     signIn(admin);
     renderAt('/no-such-page');
     expect(await screen.findByText('Page not found')).toBeInTheDocument();
   });
 
-  it('числовой адрес редактора открывает лабораторию по номеру и сохраняет instance', async () => {
+  it('numeric editor address opens the lab by its number and keeps instance', async () => {
     signIn(admin);
     const labs = [
-      { id: 7, owner_id: 1, owner: 'admin', name: 'Периметр', description: '', canvas: null, created_at: 0, updated_at: 0, devices: 0, networks: 0, public_level: 'none' as const, perms: {}, folder_id: 3 },
+      { id: 7, owner_id: 1, owner: 'admin', name: 'Perimeter', description: '', canvas: null, created_at: 0, updated_at: 0, devices: 0, networks: 0, public_level: 'none' as const, perms: {}, folder_id: 'Networks', folder: 'Networks' },
     ];
-    const folders = [{ id: 3, parent_id: null, name: 'Сети', lab_count: 1, created_at: 0, updated_at: 0 }];
+    const folders = [{ path: 'Networks', parent: '', name: 'Networks', lab_count: 1, created_at: 0, updated_at: 0 }];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.match(/\/api\/labs\/\d+/)) return new Response(JSON.stringify(labs[0]), { status: 200, headers: { 'Content-Type': 'application/json' } });

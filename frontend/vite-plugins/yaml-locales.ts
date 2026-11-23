@@ -109,5 +109,3 @@ export function yamlLocales(options: Options = {}): Plugin {
     },
   };
 }
-
-export { MODULE_ID as localesModuleId };

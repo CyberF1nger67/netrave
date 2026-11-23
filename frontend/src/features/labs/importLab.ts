@@ -14,12 +14,12 @@ export const IMPORT_ACCEPT = '.yaml,.yml,application/yaml,text/yaml';
   * the lab is placed into it. Returns the id of the created lab. Errors are thrown
   * with user-facing text.
  */
-export async function importLabFile(file: File, folderId: number): Promise<number> {
+export async function importLabFile(file: File, folderPath: string): Promise<string> {
   if (file.size > MAX_IMPORT_BYTES) throw new Error(t('The file is too large (max. 8 MB)'));
 
   const text = await file.text();
   const result = await labsApi.importLab(text);
-  if (folderId) await foldersApi.placeLab(result.id, folderId);
+  if (folderPath) await foldersApi.placeLab(result.id, folderPath);
 
   const warnings = result.warnings?.length ?? 0;
   if (warnings > 0) toast.warning(`${t('Imported with warnings:')} ${warnings}`);

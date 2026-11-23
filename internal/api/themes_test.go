@@ -41,7 +41,7 @@ func TestThemePresetsEndpoint(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("каталог тем: HTTP %d, %s", rec.Code, rec.Body.String())
+		t.Fatalf("theme catalog: HTTP %d, %s", rec.Code, rec.Body.String())
 	}
 	var catalog struct {
 		Standard []struct {
@@ -56,10 +56,10 @@ func TestThemePresetsEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(catalog.Standard) != 2 || len(catalog.Presets) != 16 {
-		t.Fatalf("тем: стандартных %d, пресетов %d", len(catalog.Standard), len(catalog.Presets))
+		t.Fatalf("themes: standard %d, presets %d", len(catalog.Standard), len(catalog.Presets))
 	}
 	if len(catalog.Presets[0].Colors) == 0 {
-		t.Fatal("у пресета нет палитры")
+		t.Fatal("preset has no palette")
 	}
 }
 
@@ -92,14 +92,14 @@ func TestThemeCreationNeedsPermission(t *testing.T) {
 	}
 	custom := `{"active":"preset:dark","custom":[{"id":"mine","name":"Mine","base":"dark","colors":{"accent":"#112233"}}]}`
 	if code := put(custom); code != http.StatusForbidden {
-		t.Fatalf("создание темы без права: HTTP %d, ожидался 403", code)
+		t.Fatalf("creating theme without permission: HTTP %d, expected 403", code)
 	}
 	if code := put(`{"active":"preset:dark","custom":[]}`); code != http.StatusOK {
-		t.Fatalf("выбор готовой темы без права: HTTP %d", code)
+		t.Fatalf("selecting a ready-made theme without permission: HTTP %d", code)
 	}
 
 	// With the permission creation is allowed.
-	res, _ = db.Exec(`INSERT INTO roles(name) VALUES('Дизайнер')`)
+	res, _ = db.Exec(`INSERT INTO roles(name) VALUES('Designer')`)
 	roleID, _ := res.LastInsertId()
 	if _, err := db.Exec(`INSERT INTO role_permissions(role_id,permission) VALUES(?,?)`, roleID, "themes.create"); err != nil {
 		t.Fatal(err)
@@ -113,14 +113,82 @@ func TestThemeCreationNeedsPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	if code := put(custom); code != http.StatusOK {
-		t.Fatalf("создание темы с правом: HTTP %d", code)
+		t.Fatalf("creating theme with permission: HTTP %d", code)
 	}
 
 	// The theme is stored as <themes_dir>/<id>.yaml and read back.
 	if _, err := os.Stat(filepath.Join(cfg.ThemesDir, strconv.FormatInt(uid, 10)+".yaml")); err != nil {
-		t.Fatalf("файл темы не создан: %v", err)
+		t.Fatalf("theme file not created: %v", err)
 	}
 	if code := put(`{"active":"preset:dark","custom":[]}`); code != http.StatusOK {
-		t.Fatalf("сохранение темы: HTTP %d", code)
+		t.Fatalf("saving theme: HTTP %d", code)
+	}
+}
+
+// A ready-made theme can be changed and deleted by a user for themselves: the change is kept in the
+// user's file, the shared catalog stays the same, and a deleted theme cannot remain active.
+func TestPresetThemeEditAndDelete(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "themes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	as := auth.New(db)
+	mux := http.NewServeMux()
+	cfg := &config.Config{ThemesDir: filepath.Join(t.TempDir(), "themes")}
+	(&Handler{DB: db, Auth: as, Cfg: cfg}).Register(mux)
+
+	res, _ := db.Exec(`INSERT INTO users(username,password_hash,role) VALUES('u1','x','user')`)
+	uid, _ := res.LastInsertId()
+	tok, csrf, _, err := as.CreateSession(uid, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func(body string) int {
+		req := httptest.NewRequest(http.MethodPut, "/api/me/theme", bytes.NewBufferString(body))
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: tok})
+		req.Header.Set("X-CSRF-Token", csrf)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	changed := `{"active":"preset:aurora","custom":[],"presets":{"aurora":{"name":"Mine-aurora","base":"dark","colors":{"accent":"#112233"}}}}`
+	if code := put(changed); code != http.StatusOK {
+		t.Fatalf("changing ready-made theme: HTTP %d", code)
+	}
+	if code := put(`{"active":"preset:aurora","custom":[],"hidden":["aurora"]}`); code != http.StatusBadRequest {
+		t.Fatalf("deleted theme remained active: HTTP %d, expected 400", code)
+	}
+	if code := put(`{"active":"dark","custom":[],"hidden":["aurora"]}`); code != http.StatusOK {
+		t.Fatalf("deleting ready-made theme: HTTP %d", code)
+	}
+	if code := put(`{"active":"dark","custom":[],"hidden":["dark"]}`); code != http.StatusBadRequest {
+		t.Fatalf("standard theme deleted: HTTP %d, expected 400", code)
+	}
+
+	// The shared catalog is not changed by one user's actions.
+	req := httptest.NewRequest(http.MethodGet, "/api/me/theme/presets", nil)
+	req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: tok})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var catalog struct {
+		Presets []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"presets"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range catalog.Presets {
+		if item.ID == "aurora" {
+			found = item.Name != "Mine-aurora"
+		}
+	}
+	if !found {
+		t.Fatal("shared catalog changed after editing one user")
 	}
 }

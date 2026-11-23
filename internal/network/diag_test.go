@@ -11,6 +11,7 @@ import (
 	"netrave/internal/database"
 	"netrave/internal/labfile"
 	"netrave/internal/labtest"
+	"netrave/internal/msgs"
 	"netrave/internal/qemu"
 )
 
@@ -29,8 +30,8 @@ func TestDiagnosticsMapsInterfacesToBridges(t *testing.T) {
 	dev := labtest.Device(t, db, lab, labfile.Device{Name: "R1", NICs: 2, NICModel: "vmxnet3"})
 	net := labtest.Network(t, db, lab, labfile.Network{Name: "SW", Type: "isolated"})
 	labtest.Connection(t, db, lab, labfile.Connection{
-		A: labfile.End{Type: "device", ID: dev, If: 0},
-		B: labfile.End{Type: "network", ID: net, If: 0},
+		A: labfile.End{Type: "device", Name: dev, If: 0},
+		B: labfile.End{Type: "network", Name: net, If: 0},
 	})
 	for _, q := range []struct {
 		sql  string
@@ -52,23 +53,23 @@ func TestDiagnosticsMapsInterfacesToBridges(t *testing.T) {
 	nm.SetQEMU(qm)
 	d := nm.Diagnostics(lab)
 	if len(d.Interfaces) != 2 {
-		t.Fatalf("интерфейсов: %d", len(d.Interfaces))
+		t.Fatalf("interfaces: %d", len(d.Interfaces))
 	}
 	first := d.Interfaces[0]
 	if first.Expected != "nrn7" || first.Label != "te1" || first.NIC != 0 {
-		t.Fatalf("интерфейс 0: %+v", first)
+		t.Fatalf("interface 0: %+v", first)
 	}
 	if first.MAC != qemu.MAC(500, 0) || !first.CableUp {
-		t.Fatalf("интерфейс 0 (MAC/провод): %+v", first)
+		t.Fatalf("interface 0 (MAC/cable): %+v", first)
 	}
 	second := d.Interfaces[1]
 	if second.Label != "te2" || !strings.HasPrefix(second.Expected, "(") {
-		t.Fatalf("интерфейс 1 без провода: %+v", second)
+		t.Fatalf("interface 1 without cable: %+v", second)
 	}
 	if len(d.Bridges) != 1 || d.Bridges[0].Name != "nrn7" {
-		t.Fatalf("мосты: %+v", d.Bridges)
+		t.Fatalf("bridges: %+v", d.Bridges)
 	}
-	if !strings.Contains(strings.Join(d.Warnings, "|"), "TAP отсутствует") {
-		t.Fatalf("нет предупреждения об отсутствующем TAP: %v", d.Warnings)
+	if !strings.Contains(msgs.Join(d.Warnings, "|"), "TAP is missing") {
+		t.Fatalf("no warning about missing TAP: %v", d.Warnings)
 	}
 }

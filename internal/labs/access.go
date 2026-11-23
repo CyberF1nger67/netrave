@@ -43,7 +43,7 @@ func (h *Handler) permsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := h.DB.Query(`SELECT id,username,role,disabled FROM users WHERE id<>? ORDER BY username COLLATE NOCASE`, lab.OwnerID)
 	if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	defer rows.Close()
@@ -61,20 +61,37 @@ func (h *Handler) permsGet(w http.ResponseWriter, r *http.Request) {
 		byID[id] = u
 		users = append(users, u)
 	}
-	// Users' own permissions on this lab - from the lab file.
-	if fl, ok := labData(h.DB, lab.ID); ok {
+	// Users' own permissions and their roles' permissions on this lab - from the lab file.
+	if fl, ok := labData(h.DB, lab.Name); ok {
+		rolesOf := map[int64]map[int64]bool{}
+		for _, u := range users {
+			ids, err := access.UserRoleIDs(h.DB, u.ID)
+			if err != nil {
+				httpx.Err(w, http.StatusInternalServerError, "Database error")
+				return
+			}
+			set := map[int64]bool{}
+			for _, roleID := range ids {
+				set[roleID] = true
+			}
+			rolesOf[u.ID] = set
+		}
 		for _, p := range fl.Permissions {
 			if u := byID[p.UserID]; u != nil && p.Perm != "" {
 				u.OwnPerms[p.Perm] = p.Value
 			}
+			for _, u := range users {
+				if p.RoleID != 0 && rolesOf[u.ID][p.RoleID] && p.Perm != "" {
+					u.RolePerms[p.Perm] = p.Value
+				}
+			}
 		}
 	}
 	for _, u := range users {
-		// Lab permissions are inherited from the assigned role: a permission not set for this
-		// lab directly is taken from the user's roles.
+		// Lab permissions are also inherited from the user's global roles (capability mapping).
 		inherited, err := access.RoleLabGrants(h.DB, u.ID)
 		if err != nil {
-			httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+			httpx.Err(w, http.StatusInternalServerError, "Database error")
 			return
 		}
 		for k := range inherited {
@@ -85,6 +102,12 @@ func (h *Handler) permsGet(w http.ResponseWriter, r *http.Request) {
 				u.Perms[p.Key] = own
 			} else if inherited[p.Key] {
 				u.Perms[p.Key] = true
+			}
+		}
+		// Entries of the user's roles written in this lab file override global role capabilities.
+		for k, v := range u.RolePerms {
+			if _, set := u.OwnPerms[k]; !set {
+				u.Perms[k] = v
 			}
 		}
 		if u.Role == "admin" {
@@ -112,7 +135,7 @@ func (h *Handler) permsSet(w http.ResponseWriter, r *http.Request) {
 	}
 	uid, err := strconv.ParseInt(r.PathValue("uid"), 10, 64)
 	if err != nil {
-		httpx.Err(w, http.StatusBadRequest, "некорректный id пользователя")
+		httpx.Err(w, http.StatusBadRequest, "Invalid user id")
 		return
 	}
 	var in struct {
@@ -122,26 +145,26 @@ func (h *Handler) permsSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(in.Changes) == 0 {
-		httpx.Err(w, http.StatusBadRequest, "нет изменений")
+		httpx.Err(w, http.StatusBadRequest, "No changes")
 		return
 	}
 	isManager := ss.User.Role == "admin" || ss.User.ID == lab.OwnerID
 	if !isManager && uid == ss.User.ID {
-		httpx.Err(w, http.StatusForbidden, "нельзя менять собственные права")
+		httpx.Err(w, http.StatusForbidden, "You cannot change your own permissions")
 		return
 	}
 	if uid == lab.OwnerID {
-		httpx.Err(w, http.StatusBadRequest, "владелец имеет все разрешения")
+		httpx.Err(w, http.StatusBadRequest, "The owner has all permissions")
 		return
 	}
 	keys := make([]string, 0, len(in.Changes))
 	for k := range in.Changes {
 		if !access.Known(k) {
-			httpx.Err(w, http.StatusBadRequest, "неизвестное разрешение: "+k)
+			httpx.ErrKey(w, http.StatusBadRequest, "Unknown permission: {permission_key}", map[string]string{"permission_key": k})
 			return
 		}
 		if !isManager && !lab.Perms[k] {
-			httpx.Err(w, http.StatusForbidden, "нельзя выдавать или отзывать право, которого нет у вас: "+access.Title(k))
+			httpx.ErrKey(w, http.StatusForbidden, "You cannot grant or revoke a permission you do not have: {permission_key}", map[string]string{"permission_key": access.Title(k)})
 			return
 		}
 		keys = append(keys, k)
@@ -149,15 +172,15 @@ func (h *Handler) permsSet(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(keys)
 	var username string
 	if err := h.DB.QueryRow(`SELECT username FROM users WHERE id=?`, uid).Scan(&username); err == sql.ErrNoRows {
-		httpx.Err(w, http.StatusBadRequest, "пользователь не найден")
+		httpx.Err(w, http.StatusBadRequest, "User not found")
 		return
 	} else if err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	// All permission changes - in one lab file write.
 	now := time.Now().Unix()
-	if err := updateLab(h.DB, lab.ID, func(l *labfile.Lab) error {
+	if err := updateLab(h.DB, lab.Name, func(l *labfile.Lab) error {
 		for _, k := range keys {
 			set := false
 			for i := range l.Permissions {
@@ -177,21 +200,20 @@ func (h *Handler) permsSet(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	h.audit(r, "lab_perms", lab.Name+": "+username+": "+strings.Join(keys, ", "))
 	// The permission change notification is addressed only to the user whose permissions changed.
 	// The initiator is mentioned in the text but does not become a recipient (otherwise an administrator
 	// would receive a false message about their own permissions).
-	body := "Изменено разрешений — " + strconv.Itoa(len(keys)) + ". Инициатор: «" + ss.User.Username + "»."
+	body := "Your permissions on «{lab}» changed. Changed permissions: {count}. {by_key}"
 	if uid == ss.User.ID {
-		body = "Вы изменили свои права. " + body
-	} else {
-		body = "Ваши права на «" + lab.Name + "» изменены. " + body
+		body = "You changed your own permissions. Changed permissions: {count}. {by_key}"
 	}
-	h.Notify.Send(uid, notify.Info, notify.CatAccount, "Права на лабораторию изменены", body,
-		"/labs/"+strconv.FormatInt(lab.ID, 10)+"/editor")
+	h.Notify.Send(uid, notify.Info, notify.CatAccount, "Lab access changed", body,
+		labLink(lab.Name),
+		notify.P("count", strconv.Itoa(len(keys)), "lab", lab.Name, "by_key", "Initiator: «{user}».", "user", ss.User.Username))
 	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "saved": len(keys)})
 }
 
@@ -208,14 +230,14 @@ func (h *Handler) publicSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !access.ValidPublic(in.Level) {
-		httpx.Err(w, http.StatusBadRequest, "общий доступ: нет или просмотр")
+		httpx.Err(w, http.StatusBadRequest, "Shared access: none or view")
 		return
 	}
-	if err := updateLab(h.DB, lab.ID, func(l *labfile.Lab) error {
+	if err := updateLab(h.DB, lab.Name, func(l *labfile.Lab) error {
 		l.PublicLevel = in.Level
 		return nil
 	}); err != nil {
-		httpx.Err(w, http.StatusInternalServerError, "ошибка базы данных")
+		httpx.Err(w, http.StatusInternalServerError, "Database error")
 		return
 	}
 	h.audit(r, "lab_public", lab.Name+": "+in.Level)

@@ -25,10 +25,10 @@ func TestEnsureIsIdempotentPerUser(t *testing.T) {
 	}
 	a2, _ := Ensure(db, lab, 2)
 	if a1 != a2 {
-		t.Fatalf("повторный вызов должен вернуть тот же экземпляр: %d != %d", a1, a2)
+		t.Fatalf("repeated call must return same instance: %d != %d", a1, a2)
 	}
 	b, _ := Ensure(db, lab, 3)
 	if b == a1 {
-		t.Fatal("разные пользователи получили один экземпляр")
+		t.Fatal("different users got the same instance")
 	}
 }

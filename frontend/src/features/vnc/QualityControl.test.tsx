@@ -122,14 +122,14 @@ describe('QualityControl', () => {
 
   it('shows a server validation error and keeps the draft', async () => {
     const { view, apply } = setup();
-    mocks.putQuality.mockRejectedValueOnce(new ApiError('битрейт должен быть целым числом от 1 до 100 Мбит/с', 400, null));
+    mocks.putQuality.mockRejectedValueOnce(new ApiError('bitrate must be an integer from 1 to 100 Mbit/s', 400, null));
     render(<QualityControl rid={7} view={view} />);
     await waitFor(() => expect(apply).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: /Image quality/ }));
     fireEvent.click(screen.getByRole('button', { name: '50' }));
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
-    expect(await screen.findByText('битрейт должен быть целым числом от 1 до 100 Мбит/с')).toBeInTheDocument();
+    expect(await screen.findByText('bitrate must be an integer from 1 to 100 Mbit/s')).toBeInTheDocument();
     expect((screen.getByRole('slider', { name: 'Bitrate' }) as HTMLInputElement).value).toBe('50');
     expect(apply).toHaveBeenCalledTimes(1);
   });

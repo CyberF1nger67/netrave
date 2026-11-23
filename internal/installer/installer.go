@@ -13,7 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"netrave/internal/hostarch"
+	"netrave/internal/yamlfmt"
 
 	"netrave/internal/config"
 	initpkg "netrave/internal/init"
@@ -124,12 +125,14 @@ func Install(ctx context.Context, options Options) (Result, error) {
 	}
 	cfg := config.Config{
 		Addr: options.Addr, DataDir: options.DataDir,
-		ImagesDir: filepath.Join(options.DataDir, "images"),
-		LabsDir:   filepath.Join(options.DataDir, "labs"),
-		IconsDir:  filepath.Join(options.DataDir, "icons"),
-		RunDir:    "/run/netrave", TmpDir: filepath.Join(options.DataDir, "tmp"),
+		DisksDir:     filepath.Join(options.DataDir, "disks"),
+		LabsDir:      filepath.Join(options.DataDir, "labs"),
+		InstancesDir: filepath.Join(options.DataDir, "instances"),
+		LogsDir:      filepath.Join(options.DataDir, "logs"),
+		IconsDir:     filepath.Join(options.DataDir, "icons"),
+		RunDir:       "/run/netrave", TmpDir: filepath.Join(options.DataDir, "tmp"),
 		DBPath:      filepath.Join(options.DataDir, "netrave.db"),
-		QEMUPath:    "qemu-system-x86_64",
+		QEMUPath:    hostarch.QEMUBinary(),
 		SocketPath:  options.SocketPath,
 		LogFile:     filepath.Join(options.LogDir, "netrave.log"),
 		RestartSec:  2,
@@ -143,8 +146,9 @@ func Install(ctx context.Context, options Options) (Result, error) {
 	} else if err := writeConfig(configFile, cfg); err != nil {
 		return Result{}, err
 	}
-	for _, dir := range []string{options.DataDir, filepath.Join(options.DataDir, "images"),
-		filepath.Join(options.DataDir, "labs"), filepath.Join(options.DataDir, "icons"),
+	for _, dir := range []string{options.DataDir, filepath.Join(options.DataDir, "disks"),
+		filepath.Join(options.DataDir, "labs"), filepath.Join(options.DataDir, "instances"),
+		filepath.Join(options.DataDir, "logs"), filepath.Join(options.DataDir, "icons"),
 		"/run/netrave", filepath.Join(options.DataDir, "tmp"), options.LogDir} {
 		if err := os.MkdirAll(hostPath(options.Root, dir), 0o750); err != nil {
 			return Result{}, fmt.Errorf("create %s: %w", dir, err)
@@ -216,7 +220,7 @@ func writeConfig(path string, cfg config.Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(cfg)
+	data, err := yamlfmt.Marshal(cfg)
 	if err != nil {
 		return err
 	}

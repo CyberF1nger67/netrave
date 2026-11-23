@@ -13,9 +13,8 @@ const Bridge = "nrnat"
 
 // Subnet - the cloud's address space. The gateway is the bridge address on the host.
 const (
-	Subnet   = "10.77.0.0/16"
-	Gateway  = "10.77.0.1"
-	PrefixOK = 16
+	Subnet  = "10.77.0.0/16"
+	Gateway = "10.77.0.1"
 )
 
 // DHCP pool: the whole subnet range except the gateway address and broadcast addresses.

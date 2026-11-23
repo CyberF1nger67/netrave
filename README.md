@@ -22,6 +22,7 @@ QEMU/network lifecycle. The React frontend is embedded in the same binary.
 - [Run in the foreground](#run-in-the-foreground)
 - [Daemon](#daemon)
 - [Configuration](#configuration)
+- [Data layout](#data-layout)
 - [CLI](#cli)
 - [Diagnostics](#diagnostics)
 - [Logs](#logs)
@@ -37,11 +38,15 @@ QEMU/network lifecycle. The React frontend is embedded in the same binary.
 ## Features
 
 - Laboratory catalog with folders, drag and drop, exports and per-lab rights.
-- Visual topology editor: devices, networks, cables, zoom, selection, snapshots.
-- QEMU/KVM lifecycle: start, stop, restart, pause, resume, wipe, clone.
+- Visual topology editor: devices, networks, cables, zoom and selection.
+- QEMU/KVM lifecycle: start, stop, restart, pause, resume, wipe, clone, and
+  saving a stopped machine as an image.
 - Image folders, disk overlays, CD-ROMs and image QEMU defaults.
-- Serial terminal, VNC client, multi-console dock and detached console page.
+- Serial terminal (xterm.js), VNC client, multi-console dock and detached console page.
 - Templates catalog, custom PNG icon library and per-user themes.
+- Messages from administrators to all users or selected users, delivered to the notification center.
+- Laboratories can be shared with all users in view mode.
+- Memory page merging on the host (KSM or UKSM) and network diagnostics.
 - Users, roles, global permissions, per-laboratory permissions and audit log.
 - Real-time notification center over WebSocket with polling fallback.
 - Dashboard with live CPU, RAM, disk and QEMU process counters.
@@ -63,6 +68,7 @@ QEMU/network lifecycle. The React frontend is embedded in the same binary.
 | CLI | `internal/cli` |
 | Embedded frontend | `internal/web/static` |
 | React source | `frontend/src` |
+| Storage and event journal | `internal/database`, `internal/labfile`, `internal/fstree`, `internal/journal` |
 
 The daemon does not duplicate domain logic. It supervises the HTTP server
 process, restarts it after failures and exposes a small control API over a Unix
@@ -78,8 +84,8 @@ socket. The HTTP server owns all business operations.
 | Fedora | Red Hat | dnf | systemd |
 | Rocky Linux | Red Hat | dnf | systemd |
 | AlmaLinux | Red Hat | dnf | systemd |
-| Void Linux | Independent | xbps-install | runit, OpenRC |
-| Alpine Linux | Independent | apk | OpenRC, runit |
+| Void Linux | Void | xbps-install | runit, OpenRC |
+| Alpine Linux | Alpine | apk | OpenRC, runit |
 | Arch Linux | Arch | pacman | systemd |
 | Manjaro | Arch | pacman | systemd |
 
@@ -97,11 +103,12 @@ adapter entry. Init detection is separate and can be overridden with `--init`.
 
 ## Requirements
 
-- Linux x86_64 or aarch64. The project is tested on x86_64, and the QEMU labs
-  are designed for `qemu-system-x86_64`.
-- Go 1.26+ to build the backend.
-- Node.js 20.19+ or 22.12+ and npm to build the frontend (required by Vite 7).
-- QEMU/KVM: `qemu-system-x86_64`, `qemu-img`.
+- Linux on x86_64 or arm64 (aarch64). Virtual machines run with KVM and use the
+  emulator of the host architecture: `qemu-system-x86_64` or `qemu-system-aarch64`.
+  Machines of the other architecture cannot run with KVM.
+- Go 1.26.11 or newer to build the backend (pinned in `go.mod`).
+- Node.js 20.19+ or 22.12+ and npm to build the frontend (required by Vite).
+- QEMU/KVM: `qemu-system-x86_64` (or `qemu-system-aarch64`), `qemu-img`, UEFI firmware (OVMF or AAVMF).
 - Networking: `ip`, `nftables`, `dnsmasq` for NAT and DHCP.
 - root for TAP bridges, nftables and KVM networking.
 - `/dev/kvm` for hardware acceleration.
@@ -201,7 +208,8 @@ sudo netrave daemon --config /etc/netrave/config.yaml --background
 ```
 
 - Foreground mode is used by systemd, OpenRC and runit.
-- Background mode detaches from the terminal and writes a PID file.
+- Background mode detaches from the terminal. While the daemon runs, its PID is
+  written to `run_dir` (`/run/netrave/daemon.pid`).
 - A lock file prevents multiple daemons: `/run/netrave/daemon.lock`.
 - IPC socket: `/run/netrave/daemon.sock` (mode 0660, peer credentials checked).
 - After an unexpected exit the daemon restarts the HTTP child after a configurable
@@ -216,7 +224,7 @@ Example configuration (`/etc/netrave/config.yaml`):
 ```yaml
 addr: ":8080"
 data_dir: /var/lib/netrave
-images_dir: /var/lib/netrave/images
+disks_dir: /var/lib/netrave/disks
 labs_dir: /var/lib/netrave/labs
 icons_dir: /var/lib/netrave/icons
 db_path: /var/lib/netrave/netrave.db
@@ -226,17 +234,41 @@ restart_sec: 2
 qemu_path: qemu-system-x86_64
 ```
 
-Other keys the configuration understands: `themes_dir`, `run_dir`, `tmp_dir`,
-`session_ttl_hours`, `max_upload_mb`, `stop_vms_on_exit`, `init_system`,
-`service_name`, `command`, and `settings`.
+Other keys the configuration understands: `instances_dir`, `logs_dir`, `themes_dir`,
+`run_dir`, `tmp_dir`, `stop_vms_on_exit`, `init_system`, `service_name` and `command`.
+The `settings` section is written by the UI and holds `session_ttl_hours`,
+`max_upload_mb` and `role_admin_description`.
 
 Precedence: command-line flags, then the configuration file, then environment
 variables, then built-in defaults.
 
 Environment variables use the `NETRAVE_` prefix: `NETRAVE_ADDR`,
-`NETRAVE_DATA`, `NETRAVE_IMAGES`, `NETRAVE_LABS`, `NETRAVE_ICONS`, `NETRAVE_DB`,
+`NETRAVE_DATA`, `NETRAVE_DISKS`, `NETRAVE_INSTANCES`, `NETRAVE_LABS`, `NETRAVE_LOGS`,
+`NETRAVE_ICONS`, `NETRAVE_DB`,
 `NETRAVE_QEMU`, `NETRAVE_SOCKET`, `NETRAVE_LOG`, `NETRAVE_CONFIG`,
 `NETRAVE_INIT`, `NETRAVE_SERVICE`.
+
+## Data layout
+
+Everything lives under `data_dir` (`/var/lib/netrave` after installation):
+
+- `netrave.db`: users, roles, permissions, lab instances and their machines.
+- `labs/`: laboratories as files in a folder tree. A directory is a folder, and
+  `<name>.yaml` inside it is a laboratory.
+- `images/` and `templates/`: catalog entries, one YAML file per entry.
+- `disks/`: disk image folders and ISO files (`disks_dir`).
+- `instances/<owner>/<lab>/<device>/`: working disks of users' machines.
+- `logs/<owner>/<lab>/<device>.log`: the QEMU log of each machine.
+- `icons/` and `themes/`: uploaded icons and themes.
+- `journal.jsonl`: the event journal shown on the Logs page.
+
+Rules:
+
+- A running laboratory cannot be renamed. A running machine cannot be renamed
+  or change its icon. Stop the machines first.
+- Renaming a laboratory or a machine moves its working disks and removes the QEMU logs.
+- Deleting a user stops the user's machines and removes their working files and logs.
+- Databases and data of earlier versions are not upgraded: recreate them.
 
 ## CLI
 
@@ -279,9 +311,9 @@ installation hints. `netdiag` prints the state of network resources as JSON.
 
 ## Logs
 
-- File: `/var/log/netrave/netrave.log`
-- systemd: `journalctl -u netrave -f`
-- IPC: `netrave logs -n 200`
+- Event journal: the Logs page in the web interface, or `GET /api/logs`. Stored in `journal.jsonl`.
+- Machine logs: `logs/<owner>/<lab>/<device>.log`. The tail of the log is shown when a machine does not start.
+- Daemon: `/var/log/netrave/netrave.log`, `journalctl -u netrave -f`, `netrave logs -n 200`.
 - Daemon logs are structured JSON (`log/slog`).
 
 ## Uninstall
@@ -308,7 +340,8 @@ sudo netrave uninstall --purge --yes
 - The HTTP server sends a strict Content-Security-Policy.
 - Uploads are validated on both client and server.
 - No secrets are written to logs.
-- Service files and configuration use restrictive permissions (`0644`, `0640`, `0750`).
+- The configuration file is written with mode `0640` and data directories with `0750`;
+  the systemd unit is `0644`.
 
 ## Troubleshooting
 
@@ -324,10 +357,9 @@ sudo netrave uninstall --purge --yes
 ## Testing
 
 ```bash
-go test ./...
+make test     # check-i18n.py, go test ./..., frontend typecheck and unit tests
+make check    # make test + gofmt -l . + go vet ./...
 cd frontend
-npm run typecheck
-npm test
 npm run e2e   # needs a running server and NETRAVE_PASSWORD; tests are skipped without it
 ```
 
@@ -336,6 +368,8 @@ npm run e2e   # needs a running server and NETRAVE_PASSWORD; tests are skipped w
 The `tools/` directory holds diagnostic and test scripts that are not part of the
 build:
 
+- `check-i18n.py` (run by `make test`) checks that every user-facing message of the Go
+  code is in `EN_KEYS` and in `frontend/locales/ru.yaml`.
 - `instances-sql-check.py` checks every SQL query in the Go code against the
   current schema using an in-memory SQLite database.
 - `l2-selftest.py` checks the L2 network model on a real Linux kernel without QEMU.

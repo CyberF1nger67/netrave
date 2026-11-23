@@ -15,7 +15,7 @@ import (
 func TestStatsMeasuresRealCPUAndClearsAfterExit(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "while :; do :; done")
 	if err := cmd.Start(); err != nil {
-		t.Skipf("нет оболочки для теста: %v", err)
+		t.Skipf("no shell for test: %v", err)
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 
@@ -26,13 +26,13 @@ func TestStatsMeasuresRealCPUAndClearsAfterExit(t *testing.T) {
 	time.Sleep(1200 * time.Millisecond)
 	st := m.Stats([]int64{7})[7]
 	if !st.Ready {
-		t.Fatalf("после второго замера загрузка должна быть измерена")
+		t.Fatalf("after the second sample, load must be measured")
 	}
 	if st.CPU < 50 {
-		t.Fatalf("процесс жжёт ядро, ожидалось >= 50%%, получено %.1f%%", st.CPU)
+		t.Fatalf("process burns the core, expected >= 50%%, got %.1f%%", st.CPU)
 	}
 	if st.RSS == 0 {
-		t.Fatalf("память процесса должна читаться из /proc, получено 0")
+		t.Fatalf("process memory must be read from /proc, got 0")
 	}
 
 	_ = cmd.Process.Kill()
@@ -40,6 +40,6 @@ func TestStatsMeasuresRealCPUAndClearsAfterExit(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	st = m.Stats([]int64{7})[7]
 	if st.CPU != 0 || st.Ready {
-		t.Fatalf("после завершения процесса старая загрузка не должна оставаться: %+v", st)
+		t.Fatalf("after the process exits, old load must not remain: %+v", st)
 	}
 }

@@ -13,9 +13,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"netrave/internal/folderstore"
 	"netrave/internal/journal"
 	"netrave/internal/labfile"
+	"netrave/internal/msgs"
 	"netrave/internal/permcatalog"
 )
 
@@ -24,11 +24,9 @@ import (
 type DB struct {
 	*sql.DB
 	Journal *journal.Journal
-	// Folders - lab folders and placement (folders.yaml in the labs directory, see AttachFolders).
-	Folders *folderstore.Store
-	// Labs - lab projects (<labs_dir>/<id>/lab.yaml, see AttachLabs).
+	// Labs - lab projects (files in the laboratories directory, see AttachLabs).
 	Labs *labfile.Store
-	// Catalog - images, machine templates and snapshots (files in the database directory, see Open).
+	// Catalog - images and machine templates (YAML files in the data directory, see Open).
 	Catalog *catalog.Store
 	// seq - the unique number of the opened database instance. In-memory caches use it as a key,
 	// so data from a closed database does not go to a new one that took the same address.
@@ -47,16 +45,6 @@ func (d *DB) AttachLabs(dir string) error {
 		return err
 	}
 	d.Labs = ls
-	return nil
-}
-
-// AttachFolders connects the lab folders file. Before the call, folders exist only in memory and are not persisted.
-func (d *DB) AttachFolders(path string) error {
-	fs, err := folderstore.Open(path)
-	if err != nil {
-		return err
-	}
-	d.Folders = fs
 	return nil
 }
 
@@ -81,18 +69,19 @@ func Open(path string) (*DB, error) {
 		sdb.Close()
 		return nil, err
 	}
-	db := &DB{DB: sdb, Journal: jrn, Folders: folderstore.Memory(), seq: dbSeq.Add(1)}
-	if err := db.AttachLabs(filepath.Join(filepath.Dir(path), "labs")); err != nil {
+	db := &DB{DB: sdb, Journal: jrn, seq: dbSeq.Add(1)}
+	// A database with another schema version is rejected before any laboratory or catalog files are touched.
+	if err := db.init(); err != nil {
 		sdb.Close()
 		return nil, err
 	}
-	cat, err := catalog.Open(filepath.Join(filepath.Dir(path), "catalog"))
+	cat, err := catalog.Open(filepath.Dir(path))
 	if err != nil {
 		sdb.Close()
 		return nil, err
 	}
 	db.Catalog = cat
-	if err := db.init(); err != nil {
+	if err := db.AttachLabs(filepath.Join(filepath.Dir(path), "labs")); err != nil {
 		sdb.Close()
 		return nil, err
 	}
@@ -109,7 +98,7 @@ func (d *DB) init() error {
 	case ver == schemaVersion:
 		return d.seedPermissions()
 	case ver != 0:
-		return fmt.Errorf("версия схемы базы %d не поддерживается (нужна %d): создайте базу заново", ver, schemaVersion)
+		return msgs.New("Database schema version {version} is not supported (version {required} is needed): recreate the database", map[string]string{"version": fmt.Sprint(ver), "required": fmt.Sprint(schemaVersion)})
 	}
 	tx, err := d.Begin()
 	if err != nil {
@@ -117,7 +106,7 @@ func (d *DB) init() error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(schema); err != nil {
-		return fmt.Errorf("создание схемы: %w", err)
+		return msgs.Wrap(err, "Schema creation: {detail}", map[string]string{"detail": err.Error()})
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return err
@@ -154,58 +143,41 @@ func (d *DB) Audit(userID int64, username, action, detail, ip string) {
 	d.AuditData(userID, username, action, detail, ip, nil)
 }
 
+// AuditKey writes a journal record whose text is a key with {name} parameters. The journal file keeps the
+// English text, while the key and the parameters go into Data (msg_key, msg_params): the interface translates
+// them when it shows the record. extra holds further Data fields (identifiers, counters).
+func (d *DB) AuditKey(userID int64, username, action, key string, params map[string]string, extra map[string]any, ip string) {
+	data := map[string]any{"msg_key": key, "msg_params": params}
+	for k, v := range extra {
+		data[k] = v
+	}
+	d.AuditData(userID, username, action, msgs.New(key, params).Error(), ip, data)
+}
+
 // AuditData writes a journal record with additional fields (e.g. lab_id for lab wipes).
 func (d *DB) AuditData(userID int64, username, action, detail, ip string, data map[string]any) {
 	_ = d.Journal.Append(journal.Entry{UserID: userID, Username: username, Action: action, Detail: detail, IP: ip, Data: data})
 }
 
-// SweepSnapshots deletes snapshots of machines whose instance rows no longer exist. Previously this was done by a foreign key cascade;
-// call it after deleting labs and users, before row numbers can be reused.
-func (d *DB) SweepSnapshots() error {
-	rows, err := d.Query(`SELECT id FROM instance_devices`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	live := map[int64]bool{}
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-		live[id] = true
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return d.Catalog.DropSnapshotsNotIn(live)
-}
-
-// NameTakenAtRoot reports that the name is taken by a folder or lab at the root. The URL /labs/<name> must
-// unambiguously lead to one of them, so such names are not repeated. exceptLab is the lab being
-// renamed: its old name is not considered taken.
-func (d *DB) NameTakenAtRoot(name string, exceptLab int64) bool {
-	want := strings.ToLower(strings.TrimSpace(name))
-	if d.Folders == nil {
-		return false
-	}
-	for _, f := range d.Folders.Folders() {
-		if strings.ToLower(f.Name) == want {
-			return true
-		}
-	}
+// NameTakenAtRoot reports that the name is taken by a folder or a lab at the root. The URL
+// /labs/<name> must unambiguously lead to one of them, so such names are not repeated at the root.
+// exceptLab is the lab being renamed: its old name is not considered taken.
+func (d *DB) NameTakenAtRoot(name, exceptLab string) bool {
 	if d.Labs == nil {
 		return false
 	}
-	placed := d.Folders.Placements()
-	for _, l := range d.Labs.Labs() {
-		if l.ID == exceptLab {
-			continue
+	want := strings.ToLower(strings.TrimSpace(name))
+	tree, err := d.Labs.Tree()
+	if err != nil {
+		return false
+	}
+	for _, f := range tree.Folders {
+		if f.Path == "" && strings.ToLower(f.Name) == want {
+			return true
 		}
-		if folder, ok := placed[l.ID]; ok && folder != 0 {
-			continue
-		}
-		if strings.ToLower(l.Name) == want {
+	}
+	for _, l := range tree.Labs {
+		if l.Folder == "" && !strings.EqualFold(l.Name, exceptLab) && strings.ToLower(l.Name) == want {
 			return true
 		}
 	}

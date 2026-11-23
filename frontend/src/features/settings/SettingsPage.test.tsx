@@ -24,8 +24,8 @@ function renderPage() {
 const mech = (enabled: boolean, extra: Record<string, unknown> = {}) =>
   ({ supported: true, available: true, enabled, saved_bytes: 0, merged: 0, ...extra });
 
-describe('настройки', () => {
-  it('у KSM и UKSM отдельные переключатели, включение одного выключает другой', async () => {
+describe('settings', () => {
+  it('KSM and UKSM have separate switches, enabling one turns the other off', async () => {
     settings.get.mockResolvedValue({ session_ttl_hours: '24', max_upload_mb: '20480' });
     settings.ksmGet.mockResolvedValue({ ksm: mech(false), uksm: mech(false) });
     // After enabling KSM the server reports: KSM enabled, UKSM disabled.
@@ -46,7 +46,7 @@ describe('настройки', () => {
     await waitFor(() => expect(settings.put).toHaveBeenCalledWith({ session_ttl_hours: '24', max_upload_mb: '20480' }));
   });
 
-  it('UKSM без поддержки в ядре помечен недоступным, KSM продолжает работать', async () => {
+  it('UKSM without kernel support is marked unavailable, KSM keeps working', async () => {
     settings.get.mockResolvedValue({ session_ttl_hours: '24', max_upload_mb: '20480' });
     settings.ksmGet.mockResolvedValue({
       ksm: mech(true),

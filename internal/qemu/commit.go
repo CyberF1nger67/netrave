@@ -14,12 +14,12 @@ import (
 	"time"
 
 	"netrave/internal/catalog"
+	"netrave/internal/msgs"
 	"netrave/internal/names"
 )
 
-// Snapshot menu modes.
+// Commit modes.
 const (
-	CommitSnapshot = "snapshot" // snapshot: a separate QCOW2 layer on top of the base image; the main disk is not copied
 	CommitImage    = "image"    // a new independent image; the machine switches to it
 	CommitOriginal = "original" // overwrite the source image with the machine's current state
 )
@@ -28,26 +28,24 @@ const (
 var ImagesMu sync.Mutex
 
 // Commit performs the commit mode. stopFirst: stop a running machine first and wait for it to stop.
-// Returns the id of the created image or snapshot (for CommitOriginal - the id of the overwritten image).
-func (m *Manager) Commit(rid int64, mode, title string, stopFirst bool) (int64, error) {
+// Returns the folder name of the created image (for CommitOriginal - of the overwritten image).
+func (m *Manager) Commit(rid int64, mode, title string, stopFirst bool) (string, error) {
 	if stopFirst {
 		if err := m.stopAndWait(rid); err != nil {
-			return 0, err
+			return "", err
 		}
 	}
 	switch mode {
-	case CommitSnapshot:
-		return m.takeSnapshot(rid, title)
 	case CommitImage:
 		return m.newImage(rid, title)
 	case CommitOriginal:
 		return m.overwriteOriginal(rid)
 	}
-	return 0, errors.New("неизвестный режим фиксации")
+	return "", errors.New("Unknown commit mode")
 }
 
 func checkTitle(title string) error {
-	return names.Check("название", title)
+	return names.Check("Title", title)
 }
 
 // beginCommit locks the machine and the image catalog for the duration of the operation.
@@ -84,7 +82,7 @@ func (m *Manager) stopAndWait(rid int64) error {
 			}
 		}
 		if time.Now().After(deadline) {
-			return errors.New("устройство не остановилось за отведённое время")
+			return errors.New("The device did not stop in time")
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -97,34 +95,35 @@ func (m *Manager) requireStopped(rid int64) (*Spec, error) {
 		return nil, err
 	}
 	if state != "stopped" && state != "error" {
-		return nil, errors.New("фиксация доступна только для остановленной машины")
+		return nil, errors.New("Commit is available only for a stopped machine")
 	}
 	if len(s.Disks) == 0 {
-		return nil, errors.New("у устройства не выбран образ")
+		return nil, errors.New("The device has no image selected")
 	}
 	for _, d := range s.Disks {
 		if !fileExists(d.Overlay) {
-			return nil, errors.New("диски устройства ещё не созданы — запустите устройство хотя бы один раз")
+			return nil, errors.New("The device disks are not created yet — start the device at least once")
 		}
 	}
 	return s, nil
 }
 
-// sourceImage returns the machine's base image, its current layer (0 - none) and the base image layout.
-func (m *Manager) sourceImage(rid int64) (baseID, layerID int64, layout string, err error) {
-	if err = m.db.QueryRow(`SELECT COALESCE(image_id,0), COALESCE(layer_image_id,0) FROM instance_devices WHERE id=?`, rid).
-		Scan(&baseID, &layerID); err != nil {
-		return 0, 0, "", errors.New("у устройства не выбран образ")
+// sourceImage returns the machine's base image and the base image layout.
+func (m *Manager) sourceImage(rid int64) (im catalog.Image, layout string, err error) {
+	var dirname string
+	if err = m.db.QueryRow(`SELECT COALESCE(image_id,'') FROM instance_devices WHERE id=?`, rid).
+		Scan(&dirname); err != nil {
+		return catalog.Image{}, "", errors.New("The device has no image selected")
 	}
-	if baseID != 0 {
-		if im, ok := m.db.Catalog.Image(baseID); ok {
-			layout = im.LayoutJSON
+	if dirname != "" {
+		if got, ok := m.db.Catalog.ImageByDirname(dirname); ok {
+			im, layout = got, got.LayoutJSON
 		}
 	}
-	if layout == "" || baseID == 0 {
-		return 0, 0, "", errors.New("у устройства не выбран образ")
+	if layout == "" || dirname == "" {
+		return catalog.Image{}, "", errors.New("The device has no image selected")
 	}
-	return baseID, layerID, layout, nil
+	return im, layout, nil
 }
 
 // convertDisk merges the machine's overlay with the whole chain (layers and base image) into a standalone dst file.
@@ -176,27 +175,10 @@ func dirSize(dir string) int64 {
 	return n
 }
 
-// layerLayout - the layout of an image whose disks are all QCOW2 layers (layers are always created in this format).
-func layerLayout(src string) (string, error) {
-	var lay map[string]any
-	if err := json.Unmarshal([]byte(src), &lay); err != nil {
-		return "", err
-	}
-	if ds, ok := lay["disks"].([]any); ok {
-		for _, d := range ds {
-			if mm, ok := d.(map[string]any); ok {
-				mm["format"] = "qcow2"
-			}
-		}
-	}
-	b, err := json.Marshal(lay)
-	return string(b), err
-}
-
 // newRow - data for a new image catalog row.
 type newRow struct {
-	title, dirname, layout, kind string
-	size, parent                 int64
+	title, dirname, layout string
+	size                   int64
 }
 
 // recordImage adds an image record and calls after in the same transaction (switching the machine, etc.).
@@ -205,7 +187,7 @@ func (m *Manager) recordImage(rid int64, r newRow, after func(tx *sql.Tx, imgID 
 	qemu := m.qemuDefaults(rid)
 	// The image lives in the catalog (files), so it is added first; if the SQL part fails, the record is rolled back.
 	id, err := m.db.Catalog.AddImage(catalog.Image{
-		Name: r.title, Dirname: r.dirname, Kind: r.kind, ParentID: r.parent, DeviceType: dtype,
+		Name: r.title, Dirname: r.dirname, DeviceType: dtype,
 		LayoutJSON: r.layout, QemuJSON: qemu, SizeBytes: r.size, CreatedAt: time.Now().Unix(),
 	})
 	if err != nil {
@@ -228,131 +210,34 @@ func (m *Manager) recordImage(rid int64, r newRow, after func(tx *sql.Tx, imgID 
 	return id, nil
 }
 
-// takeSnapshot: the machine's current overlay is moved to the image catalog as a snapshot layer (it already contains changes
-// on top of the base), and a new empty overlay is created for the machine on top of that layer. The main disk is not copied.
-// Chain: base <- snapshot layer <- machine overlay. Layers do not change after creation.
-func (m *Manager) takeSnapshot(rid int64, title string) (int64, error) {
+// newImage: an independent image from the machine's current state (the disk is merged into one file without references
+// to other images). The machine switches to the new image and its overlay is deleted.
+func (m *Manager) newImage(rid int64, title string) (string, error) {
 	if err := checkTitle(title); err != nil {
-		return 0, err
+		return "", err
 	}
 	unlock, err := m.beginCommit(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer unlock()
 	s, err := m.requireStopped(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	baseID, layerID, layout, err := m.sourceImage(rid)
+	_, layout, err := m.sourceImage(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	lay, err := layerLayout(layout)
-	if err != nil {
-		return 0, err
-	}
-	parent := layerID
-	if parent == 0 {
-		parent = baseID
-	}
-	if DiskFree(m.cfg.ImagesDir) < 1<<30 {
-		return 0, errors.New("недостаточно места в каталоге образов для снапшота")
-	}
-
-	dirname := diskDirName("snap-", title)
-	final := filepath.Join(m.cfg.ImagesDir, dirname)
-	tmp := filepath.Join(m.cfg.ImagesDir, "."+dirname+".tmp")
-	if err := os.Mkdir(tmp, 0o750); err != nil {
-		return 0, err
-	}
-	type move struct{ name, overlay string }
-	var moves []move
-	var created []string
-	renamed, done := false, false
-	defer func() {
-		if done {
-			return
-		}
-		for _, c := range created {
-			_ = os.Remove(c)
-		}
-		dir := tmp
-		if renamed {
-			dir = final
-		}
-		for _, mv := range moves {
-			_ = os.Rename(filepath.Join(dir, mv.name), mv.overlay)
-		}
-		if renamed {
-			_ = os.RemoveAll(final)
-		} else {
-			_ = os.RemoveAll(tmp)
-		}
-	}()
-
-	for _, d := range s.Disks {
-		name := filepath.Base(d.Base)
-		if err := os.Rename(d.Overlay, filepath.Join(tmp, name)); err != nil {
-			return 0, fmt.Errorf("перенос диска: %w", err)
-		}
-		moves = append(moves, move{name, d.Overlay})
-	}
-	if err := linkCDROMs(s.CDROMs, tmp); err != nil {
-		return 0, err
-	}
-	size := dirSize(tmp)
-	if err := os.Rename(tmp, final); err != nil {
-		return 0, err
-	}
-	renamed = true
-	for _, mv := range moves {
-		if _, err := m.qemuImg("create", "-f", "qcow2", "-F", "qcow2", "-b", filepath.Join(final, mv.name), mv.overlay); err != nil {
-			return 0, fmt.Errorf("новый слой поверх снапшота: %w", err)
-		}
-		created = append(created, mv.overlay)
-	}
-	id, err := m.recordImage(rid, newRow{title: title, dirname: dirname, layout: lay, kind: "snapshot", size: size, parent: parent},
-		func(tx *sql.Tx, imgID int64) error {
-			_, err := tx.Exec(`UPDATE instance_devices SET layer_image_id=? WHERE id=?`, imgID, rid)
-			return err
-		})
-	if err != nil {
-		return 0, err
-	}
-	done = true
-	return id, nil
-}
-
-// newImage: an independent image from the machine's current state (the whole chain is merged into one file without references
-// to other images). The machine switches to the new image, its overlay and layer are deleted; snapshot layers
-// remain in the catalog because other snapshots and machines may reference them.
-func (m *Manager) newImage(rid int64, title string) (int64, error) {
-	if err := checkTitle(title); err != nil {
-		return 0, err
-	}
-	unlock, err := m.beginCommit(rid)
-	if err != nil {
-		return 0, err
-	}
-	defer unlock()
-	s, err := m.requireStopped(rid)
-	if err != nil {
-		return 0, err
-	}
-	_, _, layout, err := m.sourceImage(rid)
-	if err != nil {
-		return 0, err
-	}
-	if DiskFree(m.cfg.ImagesDir) < baseNeed(s) {
-		return 0, errors.New("недостаточно места в каталоге образов для фиксации")
+	if DiskFree(m.cfg.DisksDir) < baseNeed(s) {
+		return "", errors.New("Not enough space in the image catalog to commit")
 	}
 
 	dirname := diskDirName("commit-", title)
-	final := filepath.Join(m.cfg.ImagesDir, dirname)
-	tmp := filepath.Join(m.cfg.ImagesDir, "."+dirname+".tmp")
+	final := filepath.Join(m.cfg.DisksDir, dirname)
+	tmp := filepath.Join(m.cfg.DisksDir, "."+dirname+".tmp")
 	if err := os.Mkdir(tmp, 0o750); err != nil {
-		return 0, err
+		return "", err
 	}
 	renamed, done := false, false
 	var moved []string
@@ -372,68 +257,47 @@ func (m *Manager) newImage(rid int64, title string) (int64, error) {
 
 	for _, d := range s.Disks {
 		if err := m.convertDisk(d, filepath.Join(tmp, filepath.Base(d.Base))); err != nil {
-			return 0, fmt.Errorf("создание образа: %w", err)
+			return "", msgs.Wrap(err, "Creating image: {detail}", map[string]string{"detail": err.Error()})
 		}
 	}
 	if err := linkCDROMs(s.CDROMs, tmp); err != nil {
-		return 0, err
+		return "", err
 	}
 	size := dirSize(tmp)
 	if err := os.Rename(tmp, final); err != nil {
-		return 0, err
+		return "", err
 	}
 	renamed = true
 	for _, d := range s.Disks {
 		if err := os.Rename(d.Overlay, d.Overlay+".committed"); err != nil {
-			return 0, fmt.Errorf("перенос диска: %w", err)
+			return "", msgs.Wrap(err, "Moving disk: {detail}", map[string]string{"detail": err.Error()})
 		}
 		moved = append(moved, d.Overlay)
 	}
-	id, err := m.recordImage(rid, newRow{title: title, dirname: dirname, layout: layout, kind: "image", size: size},
+	_, err = m.recordImage(rid, newRow{title: title, dirname: dirname, layout: layout, size: size},
 		func(tx *sql.Tx, imgID int64) error {
-			if _, err := tx.Exec(`UPDATE instance_devices SET image_id=?, image_own=1, layer_image_id=NULL WHERE id=?`, imgID, rid); err != nil {
-				return err
-			}
-			// The machine's snapshots are deleted before the commit: if it fails, the instance record is rolled back.
-			return m.db.Catalog.DeleteSnapshotsOf(rid)
+			_, err := tx.Exec(`UPDATE instance_devices SET image_id=?, image_own=1 WHERE id=?`, dirname, rid)
+			return err
 		})
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	done = true
 	for _, o := range moved {
 		_ = os.Remove(o + ".committed")
 	}
-	return id, nil
-}
-
-// imageDisk - a disk from the image catalog's layout_json.
-type imageDisk struct {
-	Name   string `json:"name"`
-	Format string `json:"format"`
-}
-
-// imageDisks parses the disk list from layout_json.
-func imageDisks(layout string) []imageDisk {
-	var lay struct {
-		Disks []imageDisk `json:"disks"`
-	}
-	if json.Unmarshal([]byte(layout), &lay) != nil {
-		return nil
-	}
-	return lay.Disks
+	return dirname, nil
 }
 
 // originalDependency - another machine whose working disk depends on the image.
 type originalDependency struct {
-	rid     int64
-	layerID int64
+	rid int64
 }
 
 // originalDependencies returns the machines that use the image (except the current one).
-func (m *Manager) originalDependencies(imgID, rid int64) ([]originalDependency, error) {
-	rows, err := m.db.Query(`SELECT r.id, COALESCE(r.layer_image_id,0) FROM instance_devices r
-		WHERE r.image_id=? AND r.id<>?`, imgID, rid)
+func (m *Manager) originalDependencies(dirname string, rid int64) ([]originalDependency, error) {
+	rows, err := m.db.Query(`SELECT r.id FROM instance_devices r
+		WHERE r.image_id=? AND r.id<>?`, dirname, rid)
 	if err != nil {
 		return nil, err
 	}
@@ -441,7 +305,7 @@ func (m *Manager) originalDependencies(imgID, rid int64) ([]originalDependency, 
 	var deps []originalDependency
 	for rows.Next() {
 		var d originalDependency
-		if rows.Scan(&d.rid, &d.layerID) == nil {
+		if rows.Scan(&d.rid) == nil {
 			deps = append(deps, d)
 		}
 	}
@@ -491,69 +355,49 @@ func (m *Manager) backingPointsTo(overlay, base string) (bool, error) {
 // without their own disk or after a wipe (Wipe) receive the new image. The swap is safe: new files are
 // prepared alongside, the old ones are kept as hard links (.bak), the swap is an atomic rename; on error
 // everything is rolled back.
-func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
+func (m *Manager) overwriteOriginal(rid int64) (string, error) {
 	unlock, err := m.beginCommit(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	defer unlock()
 	s, err := m.requireStopped(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	imgID, _, _, err := m.sourceImage(rid)
+	im, _, err := m.sourceImage(rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
-	deps, err := m.originalDependencies(imgID, rid)
+	imgID, dirname := im.ID, im.Dirname
+	deps, err := m.originalDependencies(dirname, rid)
 	if err != nil {
-		return 0, err
+		return "", err
 	}
 	// We do not stop running machines: their QEMU already holds the previous files open,
 	// and their working disks switch to the saved copy of the previous image at the next
 	// start (see applyPendingRebases). They get the new image only after a disk wipe.
-	var children []catalog.Image
-	parents := map[int64]int64{}
-	for _, im := range m.db.Catalog.Images() {
-		parents[im.ID] = im.ParentID
-		if im.ParentID == imgID {
-			children = append(children, im)
-		}
-	}
-	// The state of dependent machines is also needed for snapshot layers: a running machine
-	// prevents changing a layer it is currently using.
 	depActive := map[int64]bool{}
 	for _, dep := range deps {
 		_, state, err := m.loadSpec(dep.rid)
 		if err != nil {
-			return 0, err
+			return "", err
 		}
 		depActive[dep.rid] = m.get(dep.rid) != nil || (state != "stopped" && state != "error")
 	}
-	activeLayers := map[int64]bool{}
-	for _, dep := range deps {
-		if dep.layerID == 0 || !depActive[dep.rid] {
-			continue
-		}
-		seen := map[int64]bool{}
-		for id := dep.layerID; id != 0 && !seen[id]; id = parents[id] {
-			seen[id] = true
-			activeLayers[id] = true
-		}
-	}
-	if DiskFree(m.cfg.ImagesDir) < baseNeed(s) {
-		return 0, errors.New("недостаточно места для перезаписи образа")
+	if DiskFree(m.cfg.DisksDir) < baseNeed(s) {
+		return "", errors.New("Not enough space to overwrite the image")
 	}
 
 	ts := time.Now().UnixNano()
 	// Hidden directory next to the image: image directory scans do not see it,
 	// and the machines' old layers keep working after the base file is swapped.
-	// Without dependent machines and snapshots no copy is needed - then the old behavior.
+	// Without dependent machines no copy is needed - then the old behavior.
 	backupDir := ""
-	if len(deps) > 0 || len(children) > 0 {
-		backupDir = filepath.Join(filepath.Dir(s.Disks[0].Base), fmt.Sprintf(".orig-%d-%d", imgID, ts))
+	if len(deps) > 0 {
+		backupDir = filepath.Join(filepath.Dir(s.Disks[0].Base), fmt.Sprintf(".orig-%s-%d", dirname, ts))
 		if err := os.MkdirAll(backupDir, 0o750); err != nil {
-			return 0, fmt.Errorf("резервная копия образа: %w", err)
+			return "", msgs.Wrap(err, "Image backup: {detail}", map[string]string{"detail": err.Error()})
 		}
 	}
 	type rebase struct {
@@ -601,13 +445,13 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 		nf := d.Base + fmt.Sprintf(".new-%d", ts)
 		news = append(news, nf)
 		if err := m.convertDisk(d, nf); err != nil {
-			return 0, fmt.Errorf("подготовка диска: %w", err)
+			return "", msgs.Wrap(err, "Preparing disk: {detail}", map[string]string{"detail": err.Error()})
 		}
 	}
 	for _, d := range s.Disks {
 		bk := d.Base + fmt.Sprintf(".bak-%d", ts)
 		if err := os.Link(d.Base, bk); err != nil {
-			return 0, fmt.Errorf("резервная копия образа: %w", err)
+			return "", msgs.Wrap(err, "Image backup: {detail}", map[string]string{"detail": err.Error()})
 		}
 		baks = append(baks, bk)
 	}
@@ -621,71 +465,15 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 			baseByName[name] = d.Base
 			bk := filepath.Join(backupDir, name)
 			if err := os.Link(d.Base, bk); err != nil {
-				return 0, fmt.Errorf("сохранение прежнего образа: %w", err)
+				return "", msgs.Wrap(err, "Saving the previous image: {detail}", map[string]string{"detail": err.Error()})
 			}
 			backupByName[name] = bk
 		}
 	}
-	// Switch snapshot layers first: their files live in the image directory and are not
-	// tied to a single machine. Then the working disks of machines without a snapshot layer.
-	for _, child := range children {
-		// Do not change a snapshot layer that a running machine currently uses on
-		// the fly: set a marker and return the layer to the previous image before it starts.
-		if activeLayers[child.ID] {
-			for _, disk := range imageDisks(child.LayoutJSON) {
-				old := backupByName[disk.Name]
-				if old == "" {
-					continue
-				}
-				layer := filepath.Join(m.cfg.ImagesDir, child.Dirname, disk.Name)
-				if !fileExists(layer) {
-					continue
-				}
-				marker := rebaseMarker(layer)
-				if fileExists(marker) {
-					continue // already deferred to an earlier generation
-				}
-				if err := os.WriteFile(marker, []byte(old), 0o640); err != nil {
-					return 0, fmt.Errorf("отложенное переключение слоя снапшота: %w", err)
-				}
-				deferred = append(deferred, marker)
-			}
-			continue
-		}
-		for _, disk := range imageDisks(child.LayoutJSON) {
-			base := baseByName[disk.Name]
-			old := backupByName[disk.Name]
-			if base == "" || old == "" {
-				continue
-			}
-			overlay := filepath.Join(m.cfg.ImagesDir, child.Dirname, disk.Name)
-			if !fileExists(overlay) {
-				continue
-			}
-			same, err := m.backingPointsTo(overlay, base)
-			if err != nil {
-				return 0, fmt.Errorf("проверка снапшота: %w", err)
-			}
-			if !same {
-				continue // the layer already points to the saved copy of the previous generation
-			}
-			format := disk.Format
-			if format == "" {
-				format = "qcow2"
-			}
-			if err := m.rebaseLayer(overlay, old, format); err != nil {
-				return 0, fmt.Errorf("переключение снапшота: %w", err)
-			}
-			rebases = append(rebases, rebase{overlay: overlay, oldBase: base, format: format})
-		}
-	}
 	for _, dep := range deps {
-		if dep.layerID != 0 {
-			continue // the working disk refers to a snapshot layer already switched above
-		}
 		spec, _, err := m.loadSpec(dep.rid)
 		if err != nil {
-			return 0, err
+			return "", err
 		}
 		// A running machine or one transitioning between states keeps writing to its
 		// disk: its backing file cannot be switched on the fly. We remember the previous image
@@ -704,14 +492,14 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 			}
 			if active {
 				if err := os.WriteFile(marker, []byte(old), 0o640); err != nil {
-					return 0, fmt.Errorf("отложенное переключение диска зависимой машины: %w", err)
+					return "", msgs.Wrap(err, "Deferred disk switch of a dependent machine: {detail}", map[string]string{"detail": err.Error()})
 				}
 				deferred = append(deferred, marker)
 				continue
 			}
 			same, err := m.backingPointsTo(d.Overlay, d.Base)
 			if err != nil {
-				return 0, fmt.Errorf("проверка диска зависимой машины: %w", err)
+				return "", msgs.Wrap(err, "Checking the disk of a dependent machine: {detail}", map[string]string{"detail": err.Error()})
 			}
 			if !same {
 				continue
@@ -721,20 +509,20 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 				format = "qcow2"
 			}
 			if err := m.rebaseLayer(d.Overlay, old, format); err != nil {
-				return 0, fmt.Errorf("переключение диска зависимой машины: %w", err)
+				return "", msgs.Wrap(err, "Switching the disk of a dependent machine: {detail}", map[string]string{"detail": err.Error()})
 			}
 			rebases = append(rebases, rebase{overlay: d.Overlay, oldBase: d.Base, format: format})
 		}
 	}
 	for _, d := range s.Disks {
 		if err := os.Rename(d.Overlay, d.Overlay+".committed"); err != nil {
-			return 0, fmt.Errorf("перенос диска: %w", err)
+			return "", msgs.Wrap(err, "Moving disk: {detail}", map[string]string{"detail": err.Error()})
 		}
 		moved = append(moved, d.Overlay)
 	}
 	for i, d := range s.Disks {
 		if err := os.Rename(news[i], d.Base); err != nil {
-			return 0, fmt.Errorf("замена образа: %w", err)
+			return "", msgs.Wrap(err, "Replacing the image: {detail}", map[string]string{"detail": err.Error()})
 		}
 		swapped++
 	}
@@ -754,14 +542,7 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 		im.SizeBytes = size
 		return nil
 	}); err != nil {
-		return 0, err
-	}
-	if err := m.db.Catalog.DeleteSnapshotsOf(rid); err != nil {
-		return 0, err
-	}
-	// The current machine now runs directly from the updated base image.
-	if _, err := m.db.Exec(`UPDATE instance_devices SET layer_image_id=NULL WHERE id=?`, rid); err != nil {
-		return 0, err
+		return "", err
 	}
 	done = true
 	for _, b := range baks {
@@ -773,7 +554,7 @@ func (m *Manager) overwriteOriginal(rid int64) (int64, error) {
 	if backupDir != "" && len(rebases) == 0 && len(deferred) == 0 {
 		_ = os.RemoveAll(backupDir) // nobody needed the copy
 	}
-	return imgID, nil
+	return dirname, nil
 }
 
 // slugName builds a safe directory name from a title (latin letters, digits, "-", "_").
@@ -798,10 +579,10 @@ func slugName(s string) string {
 
 // deviceType returns the device type (template type); images are filtered by it in the add-machine menu.
 func (m *Manager) deviceType(rid int64) string {
-	var devID int64
-	_ = m.db.QueryRow(`SELECT device_id FROM instance_devices WHERE id=?`, rid).Scan(&devID)
+	var devID, labName string
+	_ = m.db.QueryRow(`SELECT r.device_id, i.lab_id FROM instance_devices r JOIN lab_instances i ON i.id=r.instance_id WHERE r.id=?`, rid).Scan(&devID, &labName)
 	t := "generic"
-	if fd, _, ok := m.db.Labs.Device(devID); ok && fd.TemplateID != 0 {
+	if fd, _, ok := m.db.Labs.Device(labName, devID); ok && fd.TemplateID != 0 {
 		if tpl, ok := m.db.Catalog.Template(fd.TemplateID); ok && tpl.Type != "" {
 			t = tpl.Type
 		}

@@ -21,7 +21,7 @@ export function Toaster() {
   const dismiss = useToastStore((state) => state.dismiss);
   if (!items.length) return null;
   return (
-    <div className="fixed right-4 top-4 z-[160] flex w-[min(380px,calc(100vw-32px))] flex-col gap-2" role="status" aria-live="polite">
+    <div className="fixed right-4 top-[76px] z-[160] max-[900px]:top-[70px] flex w-[min(380px,calc(100vw-32px))] flex-col gap-2" role="status" aria-live="polite">
       {items.map((item) => (
         <div key={item.id} className={`flex items-start gap-[9px] rounded-app-sm border border-line border-l-4 bg-panel px-3 py-[11px] text-[13px] leading-[1.45] text-text shadow-app ${tabClass[item.level]}`}>
           <Icon name={iconOf(item.level)} size={16} />

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"netrave/internal/instances"
+	"netrave/internal/msgs"
+	"netrave/internal/names"
 	"netrave/internal/qemu"
 )
 
@@ -70,14 +72,18 @@ var (
 	nicModels  = set("virtio-net-pci", "e1000", "e1000e", "rtl8139", "vmxnet3", "i82559er", "ne2k_pci")
 	ifaceTypes = set("ens", "te", "ge")
 	diskBuses  = set("virtio", "ide", "sata", "scsi")
-	arches     = set("x86_64", "i386")
+	arches     = set("x86_64", "i386", "aarch64")
 	tplTypes   = set("linux", "windows", "router", "switch", "firewall", "server", "generic")
 	machineRe  = regexp.MustCompile(`^[a-z0-9_.-]{1,32}$`)
-	nameRe     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$`)
 	ifaceRe    = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,15}$`)
 	suffixRe   = regexp.MustCompile(`-\d+$`)
-	baseCleanR = regexp.MustCompile(`[^A-Za-z0-9_.]`)
+	baseCleanR = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 )
+
+// validName reports whether a device or network name follows the shared naming rule.
+func validName(s string) bool {
+	return names.Valid(s)
+}
 
 // Normalize substitutes the default interface type (ens<start+N>) if it is not set.
 func (p *Params) Normalize() {
@@ -91,33 +97,33 @@ func (p *Params) Validate() error {
 	p.Normalize()
 	switch {
 	case !arches[p.Arch]:
-		return errors.New("неподдерживаемая архитектура")
+		return errors.New("Unsupported architecture")
 	case !machineRe.MatchString(p.Machine):
-		return errors.New("некорректный тип машины QEMU")
+		return errors.New("Invalid QEMU machine type")
 	case p.CPU < 1 || p.CPU > 64:
-		return errors.New("CPU: от 1 до 64")
+		return errors.New("CPU: from 1 to 64")
 	case p.RAMMB < 64 || p.RAMMB > 524288:
-		return errors.New("RAM: от 64 до 524288 МБ")
+		return errors.New("RAM: from 64 to 524288 MB")
 	case p.NICs < 1 || p.NICs > 32:
-		return errors.New("сетевых интерфейсов: от 1 до 32")
+		return errors.New("Network interfaces: from 1 to 32")
 	case !nicModels[p.NICModel]:
-		return errors.New("неподдерживаемая модель сетевой карты")
+		return errors.New("Unsupported network card model")
 	case !ifaceTypes[p.IfaceType]:
-		return errors.New("тип сетевого интерфейса: ens, te или ge")
+		return errors.New("Network interface type: ens, te or ge")
 	case p.IfaceStart < -1 || p.IfaceStart > 31:
-		return errors.New("начальный номер интерфейса: от -1 до 31 (-1 — сдвиг: nic0 = MGMT, nic1 = ge0)")
+		return errors.New("Starting interface number: from -1 to 31 (-1 — shift: nic0 = MGMT, nic1 = ge0)")
 	case !diskBuses[p.DiskBus]:
-		return errors.New("неподдерживаемый тип диска")
+		return errors.New("Unsupported disk type")
 	case p.BIOS != "seabios" && p.BIOS != "uefi":
-		return errors.New("BIOS: seabios или uefi")
+		return errors.New("BIOS: seabios or uefi")
 	case p.Console != "serial" && p.Console != "vnc":
-		return errors.New("консоль: serial или vnc")
+		return errors.New("Console: serial or vnc")
 	case len(p.ExtraArgs) > 512:
-		return errors.New("дополнительные параметры QEMU: не более 512 символов")
+		return errors.New("Additional QEMU parameters: no more than 512 characters")
 	}
 	for _, r := range p.ExtraArgs {
 		if r < 32 || r == 127 {
-			return errors.New("недопустимые символы в параметрах QEMU")
+			return errors.New("Invalid characters in the QEMU parameters")
 		}
 	}
 	if _, err := qemu.ParseExtraArgs(p.ExtraArgs); err != nil {
@@ -170,7 +176,7 @@ func (p *Params) apply(pp *paramsPatch) bool {
 // ---------- models ----------
 
 type Lab struct {
-	ID          int64           `json:"id"`
+	ID          string          `json:"id"` // same as name; kept for URL helpers and older clients
 	OwnerID     int64           `json:"owner_id"`
 	Owner       string          `json:"owner"`
 	Name        string          `json:"name"`
@@ -182,7 +188,9 @@ type Lab struct {
 	Networks    int             `json:"networks"`
 	PublicLevel string          `json:"public_level"`
 	Perms       map[string]bool `json:"perms"`     // effective permissions of the current user (computed, not stored)
-	FolderID    int64           `json:"folder_id"` // current user's folder (0 - root); filled in the list, not stored in labs
+	Folder      string          `json:"folder"`    // folder path of the lab ("" - root); filled in the list, not stored in labs
+	FolderID    string          `json:"folder_id"` // same as Folder
+	Running     bool            `json:"running"`   // at least one machine of an instance is running (computed, not stored)
 }
 
 func validCanvas(b []byte) bool {
@@ -202,10 +210,10 @@ func validIconSize(size int) bool {
 }
 
 type Device struct {
-	ID         int64   `json:"id"`
-	LabID      int64   `json:"lab_id"`
+	ID         string  `json:"id"` // same as name
+	LabID      string  `json:"lab_id"`
 	TemplateID *int64  `json:"template_id"`
-	ImageID    *int64  `json:"image_id"`
+	ImageID    *string `json:"image_id"`
 	Name       string  `json:"name"`
 	X          float64 `json:"x"`
 	Y          float64 `json:"y"`
@@ -258,8 +266,8 @@ func pendingFields(d *Device, applied string) []string {
 }
 
 type Network struct {
-	ID         int64   `json:"id"`
-	LabID      int64   `json:"lab_id"`
+	ID         string  `json:"id"` // same as name
+	LabID      string  `json:"lab_id"`
 	Name       string  `json:"name"`
 	Type       string  `json:"type"`
 	Subnet     string  `json:"subnet"`
@@ -274,17 +282,20 @@ type Network struct {
 }
 
 type Conn struct {
-	ID    int64  `json:"id"`
-	LabID int64  `json:"lab_id"`
+	ID    string `json:"id"`  // same as key
+	Key   string `json:"key"` // derived from the cable ends
+	LabID string `json:"lab_id"`
 	AType string `json:"a_type"`
-	AID   int64  `json:"a_id"`
+	AName string `json:"a_name"`
+	AID   string `json:"a_id"` // same as a_name
 	AIf   int    `json:"a_if"`
 	BType string `json:"b_type"`
-	BID   int64  `json:"b_id"`
+	BName string `json:"b_name"`
+	BID   string `json:"b_id"` // same as b_name
 	BIf   int    `json:"b_if"`
 	Up    bool   `json:"up"` // wire enabled in the instance (a disabled wire does not carry traffic)
 	// Warnings - what could not be applied to running machines when the wire was created (the wire is saved).
-	Warnings []string `json:"warnings,omitempty"`
+	Warnings []msgs.Message `json:"warnings,omitempty"`
 }
 
 type Topology struct {

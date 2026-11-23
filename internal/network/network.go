@@ -22,6 +22,7 @@ import (
 	"netrave/internal/config"
 	"netrave/internal/database"
 	"netrave/internal/labfile"
+	"netrave/internal/msgs"
 	"netrave/internal/natcloud"
 	"netrave/internal/qemu"
 )
@@ -71,7 +72,7 @@ func vethNames(id int64) (string, string) { return fmt.Sprintf("nrv%x", id), fmt
 func tapName(rid int64, nic int) (string, error) {
 	n := fmt.Sprintf("nrt%xn%d", rid, nic)
 	if len(n) > 15 {
-		return "", errors.New("слишком большой идентификатор машины для имени сетевого интерфейса")
+		return "", errors.New("The machine id is too large for a network interface name")
 	}
 	return n, nil
 }
@@ -91,7 +92,7 @@ func parseTap(name string) (int64, bool) {
 
 type netRow struct {
 	ID        int64
-	LabID     int64
+	LabID     string
 	Type      string
 	Subnet    string
 	Gateway   string
@@ -106,9 +107,9 @@ type netRow struct {
 // netFor returns the network object's group in the instance: an instance_networks row (created on first connection).
 // For NAT networks addresses are shared (natcloud); the row id is the isolation key: machines of different instances and different
 // network objects cannot exchange frames on a shared bridge (see applyIsolation).
-func (m *Manager) netFor(instID, netID int64) (*netRow, error) {
+func (m *Manager) netFor(instID int64, labName, netName string) (*netRow, error) {
 	var n netRow
-	fn, labID, ok := m.db.Labs.Network(netID)
+	fn, labID, ok := m.db.Labs.Network(labName, netName)
 	if !ok {
 		return nil, sql.ErrNoRows
 	}
@@ -117,11 +118,11 @@ func (m *Manager) netFor(instID, netID int64) (*netRow, error) {
 		n.Subnet, n.Gateway, n.DHCPStart, n.DHCPEnd = natcloud.Fields()
 	}
 	var rid int64
-	err := m.db.QueryRow(`SELECT id,subnet,gateway,dhcp_start,dhcp_end FROM instance_networks WHERE instance_id=? AND network_id=?`, instID, netID).
+	err := m.db.QueryRow(`SELECT id,subnet,gateway,dhcp_start,dhcp_end FROM instance_networks WHERE instance_id=? AND network_id=?`, instID, netName).
 		Scan(&rid, new(string), new(string), new(string), new(string))
 	if err == sql.ErrNoRows {
 		res, ierr := m.db.Exec(`INSERT INTO instance_networks(instance_id, network_id, subnet, gateway, dhcp_start, dhcp_end) VALUES(?,?,?,?,?,?)`,
-			instID, netID, n.Subnet, n.Gateway, n.DHCPStart, n.DHCPEnd)
+			instID, netName, n.Subnet, n.Gateway, n.DHCPStart, n.DHCPEnd)
 		if ierr != nil {
 			return nil, ierr
 		}
@@ -137,12 +138,12 @@ func (m *Manager) netFor(instID, netID int64) (*netRow, error) {
 }
 
 // linkFor returns the id of the cable's bridge in the instance.
-func (m *Manager) linkFor(instID, connID int64) (int64, error) {
-	if _, err := m.db.Exec(`INSERT OR IGNORE INTO instance_links(instance_id, connection_id) VALUES(?,?)`, instID, connID); err != nil {
+func (m *Manager) linkFor(instID int64, connKey string) (int64, error) {
+	if _, err := m.db.Exec(`INSERT OR IGNORE INTO instance_links(instance_id, connection_id) VALUES(?,?)`, instID, connKey); err != nil {
 		return 0, err
 	}
 	var lid int64
-	err := m.db.QueryRow(`SELECT id FROM instance_links WHERE instance_id=? AND connection_id=?`, instID, connID).Scan(&lid)
+	err := m.db.QueryRow(`SELECT id FROM instance_links WHERE instance_id=? AND connection_id=?`, instID, connKey).Scan(&lid)
 	return lid, err
 }
 
@@ -194,14 +195,20 @@ func (m *Manager) activeNets() ([]netRow, error) {
 	var out []netRow
 	for rows.Next() {
 		var n netRow
-		var inst, netID int64
+		var inst int64
+		var netID string
 		if err := rows.Scan(&n.ID, &inst, &netID, &n.Subnet, &n.Gateway, &n.DHCPStart, &n.DHCPEnd); err != nil {
 			return nil, err
 		}
 		if !active[inst] {
 			continue
 		}
-		fn, labID, ok := m.db.Labs.Network(netID)
+		// The instance belongs to exactly one lab; a network name is unique inside it.
+		var labName string
+		if m.db.QueryRow(`SELECT lab_id FROM lab_instances WHERE id=?`, inst).Scan(&labName) != nil {
+			continue
+		}
+		fn, labID, ok := m.db.Labs.Network(labName, netID)
 		if !ok {
 			continue
 		}
@@ -256,7 +263,7 @@ func (m *Manager) tapFor(s *qemu.Spec, nic int) (string, error) {
 	if !ok {
 		return m.detachedTap(s, nic)
 	}
-	connID, aType, aID, aIf, bType, bID := c.ID, c.A.Type, c.A.ID, c.A.If, c.B.Type, c.B.ID
+	connID, aType, aID, aIf, bType, bID := c.Key(), c.A.Type, c.A.Name, c.A.If, c.B.Type, c.B.Name
 
 	peerType, peerID := aType, aID
 	if aType == "device" && aID == s.DeviceID && aIf == nic {
@@ -265,7 +272,7 @@ func (m *Manager) tapFor(s *qemu.Spec, nic int) (string, error) {
 
 	var br string
 	if peerType == "network" {
-		n, nerr := m.netFor(s.InstanceID, peerID)
+		n, nerr := m.netFor(s.InstanceID, s.LabID, peerID)
 		if nerr != nil {
 			return "", nerr
 		}
@@ -304,9 +311,9 @@ func (m *Manager) tapFor(s *qemu.Spec, nic int) (string, error) {
 		return "", err
 	}
 	if m.linkUp(s.InstanceID, connID) {
-		log.Printf("network: машина %d, интерфейс %d: TAP %s подключён к мосту %s", s.ID, nic, tap, br)
+		log.Printf("network: machine %d, interface %d: TAP %s attached to bridge %s", s.ID, nic, tap, br)
 	} else {
-		log.Printf("network: машина %d, интерфейс %d: TAP %s создан, провод отключён (мост %s не подключён)", s.ID, nic, tap, br)
+		log.Printf("network: machine %d, interface %d: TAP %s created, cable is disconnected (bridge %s not attached)", s.ID, nic, tap, br)
 	}
 	return tap, nil
 }
@@ -363,12 +370,12 @@ func (m *Manager) Reconcile() []error {
 
 	for i := range nets {
 		if _, err := m.ensureNetwork(&nets[i]); err != nil {
-			errs = append(errs, fmt.Errorf("сеть %s: %w", netBridge(nets[i].ID), err))
+			errs = append(errs, msgs.Wrap(err, "Network {bridge}: {detail}", map[string]string{"bridge": netBridge(nets[i].ID), "detail": err.Error()}))
 		}
 	}
 	for _, id := range links {
 		if err := ensureBridge(linkBridge(id)); err != nil {
-			errs = append(errs, fmt.Errorf("кабель %s: %w", linkBridge(id), err))
+			errs = append(errs, msgs.Wrap(err, "Cable {bridge}: {detail}", map[string]string{"bridge": linkBridge(id), "detail": err.Error()}))
 		}
 	}
 
@@ -487,7 +494,7 @@ func ensureNATCloud() error {
 		return err
 	}
 	if err := writeSysctl("/proc/sys/net/ipv4/ip_forward", "1"); err != nil {
-		return fmt.Errorf("включение ip_forward: %w", err)
+		return msgs.Wrap(err, "Enabling ip_forward: {detail}", map[string]string{"detail": err.Error()})
 	}
 	return nil
 }
@@ -507,7 +514,7 @@ func setAddr(br, cidr string) error {
 
 func attachHost(netID int64, br, host string) error {
 	if !linkExists(host) {
-		return fmt.Errorf("интерфейс хоста %q не найден", host)
+		return msgs.New("Host interface «{host}» not found", map[string]string{"host": host})
 	}
 	a, b := vethNames(netID)
 	if isBridge(host) {
@@ -532,10 +539,10 @@ func attachHost(netID int64, br, host string) error {
 	delLink(a)
 	delLink(b)
 	if defaultIface() == host {
-		return fmt.Errorf("интерфейс %s несёт маршрут по умолчанию: его подключение к мосту отключит хост от сети; выберите другой интерфейс или мост", host)
+		return msgs.New("Interface {host} carries the default route: connecting it to the bridge would cut the host off the network; choose another interface or bridge", map[string]string{"host": host})
 	}
 	if m := masterOf(host); m != "" && m != br {
-		return fmt.Errorf("интерфейс %s уже входит в мост %s", host, m)
+		return msgs.New("Interface {host} is already in bridge {bridge}", map[string]string{"host": host, "bridge": m})
 	}
 	if masterOf(host) != br {
 		if _, err := ip("link", "set", host, "master", br); err != nil {
@@ -578,7 +585,7 @@ func (m *Manager) detachedTap(s *qemu.Spec, nic int) (string, error) {
 		delLink(tap)
 		return "", err
 	}
-	log.Printf("network: машина %d, интерфейс %d: TAP %s создан без провода (нет подключения в топологии)", s.ID, nic, tap)
+	log.Printf("network: machine %d, interface %d: TAP %s created without a cable (no connection in the topology)", s.ID, nic, tap)
 	return tap, nil
 }
 
@@ -751,10 +758,10 @@ func killStrayDnsmasq(iface string, tracked int) {
 func (m *Manager) ensureDHCP() error {
 	bridge := natcloud.Bridge
 	if !linkExists(bridge) {
-		return errors.New("мост NAT-облака не создан")
+		return errors.New("The NAT cloud bridge is not created")
 	}
 	if _, err := exec.LookPath("dnsmasq"); err != nil {
-		return errors.New("dnsmasq не найден (установите пакет dnsmasq для DHCP)")
+		return errors.New("dnsmasq not found (install the dnsmasq package for DHCP)")
 	}
 	pidF, argsF, leaseF := dnsPaths(m.cfg.RunDir, sharedDHCPID)
 	args := []string{
@@ -806,9 +813,9 @@ func (m *Manager) applyDHCP(nets []netRow) []error {
 // ---------- wires: disconnecting and connecting ----------
 
 // linkUp reports whether the wire is enabled for the instance. A wire without a record is considered enabled.
-func (m *Manager) linkUp(instID, connID int64) bool {
+func (m *Manager) linkUp(instID int64, connKey string) bool {
 	var up int
-	if err := m.db.QueryRow(`SELECT up FROM instance_links WHERE instance_id=? AND connection_id=?`, instID, connID).Scan(&up); err != nil {
+	if err := m.db.QueryRow(`SELECT up FROM instance_links WHERE instance_id=? AND connection_id=?`, instID, connKey).Scan(&up); err != nil {
 		return true
 	}
 	return up != 0
@@ -824,18 +831,18 @@ func (m *Manager) DownNICs(s *qemu.Spec) []int {
 	defer rows.Close()
 	var out []int
 	for rows.Next() {
-		var cid int64
+		var cid string
 		if rows.Scan(&cid) != nil {
 			continue
 		}
-		c, ok := m.connRow(cid)
+		c, ok := m.connRow(s.LabID, cid)
 		if !ok {
 			continue
 		}
-		if c.A.Type == "device" && c.A.ID == s.DeviceID {
+		if c.A.Type == "device" && c.A.Name == s.DeviceID {
 			out = append(out, c.A.If)
 		}
-		if c.B.Type == "device" && c.B.ID == s.DeviceID {
+		if c.B.Type == "device" && c.B.Name == s.DeviceID {
 			out = append(out, c.B.If)
 		}
 	}
@@ -857,7 +864,7 @@ const (
 // The source is data managed by the network manager itself: whether TAP interfaces exist (lower
 // halves in nrn/nrl bridges) and whether the wire is disabled in the instance. The logic that creates bridges and
 // wires does not change: the state is only read.
-func (m *Manager) NICStates(labID int64, rids []int64) map[int64]map[int]int {
+func (m *Manager) NICStates(labName string, rids []int64) map[int64]map[int]int {
 	out := map[int64]map[int]int{}
 	if len(rids) == 0 {
 		return out
@@ -866,13 +873,14 @@ func (m *Manager) NICStates(labID int64, rids []int64) map[int64]map[int]int {
 	rows, err := m.db.Query(`SELECT r.id, r.device_id, r.instance_id, r.nics
 		FROM instance_devices r
 		JOIN lab_instances i ON i.id=r.instance_id
-		WHERE i.lab_id=?`, labID)
+		WHERE i.lab_id=?`, labName)
 	if err != nil {
 		return out
 	}
 	type row struct {
-		rid, device, instance int64
-		nics                  int
+		rid, instance int64
+		device        string
+		nics          int
 	}
 	lines := []row{}
 	wanted := map[int64]bool{}
@@ -891,15 +899,20 @@ func (m *Manager) NICStates(labID int64, rids []int64) map[int64]map[int]int {
 	rows.Close()
 
 	// Disabled instance wires: the interface at their end remains without a link.
-	offLinks := map[int64]map[[2]int64]bool{}
-	labConn := map[int64]labfile.Connection{}
-	for _, c := range m.connsOf(labID) {
-		labConn[c.ID] = c
+	type portKey struct {
+		device string
+		nic    int
+	}
+	offLinks := map[int64]map[portKey]bool{}
+	labConn := map[string]labfile.Connection{}
+	for _, c := range m.connsOf(labName) {
+		labConn[c.Key()] = c
 	}
 	lrows, err := m.db.Query(`SELECT instance_id, connection_id FROM instance_links WHERE up = 0`)
 	if err == nil {
 		for lrows.Next() {
-			var inst, cid int64
+			var inst int64
+			var cid string
 			if lrows.Scan(&inst, &cid) != nil {
 				continue
 			}
@@ -908,13 +921,13 @@ func (m *Manager) NICStates(labID int64, rids []int64) map[int64]map[int]int {
 				continue
 			}
 			if offLinks[inst] == nil {
-				offLinks[inst] = map[[2]int64]bool{}
+				offLinks[inst] = map[portKey]bool{}
 			}
 			if c.A.Type == "device" {
-				offLinks[inst][[2]int64{c.A.ID, int64(c.A.If)}] = true
+				offLinks[inst][portKey{c.A.Name, c.A.If}] = true
 			}
 			if c.B.Type == "device" {
-				offLinks[inst][[2]int64{c.B.ID, int64(c.B.If)}] = true
+				offLinks[inst][portKey{c.B.Name, c.B.If}] = true
 			}
 		}
 		lrows.Close()
@@ -928,7 +941,7 @@ func (m *Manager) NICStates(labID int64, rids []int64) map[int64]map[int]int {
 			switch {
 			case err != nil:
 				codes[nic] = NICNotAttached
-			case offLinks[line.instance][[2]int64{line.device, int64(nic)}]:
+			case offLinks[line.instance][portKey{line.device, nic}]:
 				codes[nic] = NICUnready
 			case ifaces[tap]:
 				// The TAP exists and is in the bridge: the interface is attached and working.
@@ -959,33 +972,33 @@ func hostInterfaceNames() map[string]bool {
 // Running instance machines switch immediately: the TAP leaves the cable bridge (or returns to it),
 // and QEMU receives set_link for the interface, so the guest OS sees the link go down and come back.
 // setLink is a QMP call (implemented by the qemu package); it is not called for machines that are not running.
-func (m *Manager) SetCable(instID, connID int64, up bool, setLink func(rid int64, nic int, up bool) error) error {
+func (m *Manager) SetCable(labName string, instID int64, connKey string, up bool, setLink func(rid int64, nic int, up bool) error) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var aT, bT string
-	var aID, bID int64
+	var aID, bID string
 	var aIf, bIf int
-	c, ok := m.connRow(connID)
+	c, ok := m.connRow(labName, connKey)
 	if !ok {
 		return sql.ErrNoRows
 	}
-	aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.ID, c.A.If, c.B.Type, c.B.ID, c.B.If
-	if _, err := m.db.Exec(`INSERT OR IGNORE INTO instance_links(instance_id, connection_id) VALUES(?,?)`, instID, connID); err != nil {
+	aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.Name, c.A.If, c.B.Type, c.B.Name, c.B.If
+	if _, err := m.db.Exec(`INSERT OR IGNORE INTO instance_links(instance_id, connection_id) VALUES(?,?)`, instID, connKey); err != nil {
 		return err
 	}
 	v := 0
 	if up {
 		v = 1
 	}
-	if _, err := m.db.Exec(`UPDATE instance_links SET up=? WHERE instance_id=? AND connection_id=?`, v, instID, connID); err != nil {
+	if _, err := m.db.Exec(`UPDATE instance_links SET up=? WHERE instance_id=? AND connection_id=?`, v, instID, connKey); err != nil {
 		return err
 	}
 
 	type end struct {
-		dev      int64
+		dev      string
 		nic      int
 		peerType string
-		peerID   int64
+		peerID   string
 	}
 	var ends []end
 	if aT == "device" {
@@ -1012,7 +1025,7 @@ func (m *Manager) SetCable(instID, connID int64, up bool, setLink func(rid int64
 			continue
 		}
 		if up {
-			br, err := m.cableBridge(instID, connID, e.peerType, e.peerID)
+			br, err := m.cableBridge(labName, instID, connKey, e.peerType, e.peerID)
 			if err != nil {
 				errs = append(errs, err)
 				continue
@@ -1020,12 +1033,12 @@ func (m *Manager) SetCable(instID, connID int64, up bool, setLink func(rid int64
 			if _, err := ip("link", "set", tap, "master", br); err != nil {
 				errs = append(errs, err)
 			} else {
-				log.Printf("network: провод %d: TAP %s машины %d подключён к мосту %s", connID, tap, rid, br)
+				log.Printf("network: cable %s: TAP %s of machine %d attached to bridge %s", connKey, tap, rid, br)
 			}
 		} else if _, err := ip("link", "set", tap, "nomaster"); err != nil {
 			errs = append(errs, err)
 		} else {
-			log.Printf("network: провод %d: TAP %s машины %d выведен из моста (link down)", connID, tap, rid)
+			log.Printf("network: cable %s: TAP %s of machine %d removed from bridge (link down)", connKey, tap, rid)
 		}
 		if setLink != nil {
 			if err := setLink(rid, e.nic, up); err != nil {
@@ -1043,15 +1056,15 @@ func (m *Manager) SetCable(instID, connID int64, up bool, setLink func(rid int64
 }
 
 // cableBridge returns the bridge to which the wire on the opposite side is connected.
-func (m *Manager) cableBridge(instID, connID int64, peerType string, peerID int64) (string, error) {
+func (m *Manager) cableBridge(labName string, instID int64, connKey string, peerType string, peerID string) (string, error) {
 	if peerType == "network" {
-		n, err := m.netFor(instID, peerID)
+		n, err := m.netFor(instID, labName, peerID)
 		if err != nil {
 			return "", err
 		}
 		return m.ensureNetwork(n)
 	}
-	lid, err := m.linkFor(instID, connID)
+	lid, err := m.linkFor(instID, connKey)
 	if err != nil {
 		return "", err
 	}
@@ -1075,7 +1088,7 @@ func (m *Manager) syncNAT() []error {
 		return append(errs, err)
 	}
 	if err := applyIsolation(groups); err != nil {
-		errs = append(errs, fmt.Errorf("изоляция NAT-облака: %w", err))
+		errs = append(errs, msgs.Wrap(err, "NAT cloud isolation: {detail}", map[string]string{"detail": err.Error()}))
 	}
 	return errs
 }
@@ -1086,23 +1099,23 @@ func (m *Manager) syncNAT() []error {
 func (m *Manager) natGroups() (map[string][]string, error) {
 	// Wires to networks of type nat: all labs whose files are stored in the storage.
 	type edge struct {
-		net, dev int64
-		nic      int
+		lab, net, dev string
+		nic           int
 	}
 	var edges []edge
 	for _, l := range m.db.Labs.Labs() {
-		natNets := map[int64]bool{}
+		natNets := map[string]bool{}
 		for _, n := range l.Networks {
 			if n.Type == "nat" {
-				natNets[n.ID] = true
+				natNets[n.Name] = true
 			}
 		}
 		for _, c := range l.Connections {
 			switch {
-			case c.A.Type == "network" && natNets[c.A.ID] && c.B.Type == "device":
-				edges = append(edges, edge{c.A.ID, c.B.ID, c.B.If})
-			case c.B.Type == "network" && natNets[c.B.ID] && c.A.Type == "device":
-				edges = append(edges, edge{c.B.ID, c.A.ID, c.A.If})
+			case c.A.Type == "network" && natNets[c.A.Name] && c.B.Type == "device":
+				edges = append(edges, edge{l.Name, c.A.Name, c.B.Name, c.B.If})
+			case c.B.Type == "network" && natNets[c.B.Name] && c.A.Type == "device":
+				edges = append(edges, edge{l.Name, c.B.Name, c.A.Name, c.A.If})
 			}
 		}
 	}
@@ -1122,7 +1135,7 @@ func (m *Manager) natGroups() (map[string][]string, error) {
 			if terr != nil {
 				continue
 			}
-			key := fmt.Sprintf("%d:%d", inst, e.net)
+			key := fmt.Sprintf("%d:%s/%s", inst, e.lab, e.net)
 			groups[key] = append(groups[key], tap)
 		}
 		irows.Close()
@@ -1169,19 +1182,19 @@ func applyIsolation(groups map[string][]string) error {
 // For each running end: the machine's TAP interface joins the wire (or network) bridge of that instance,
 // is brought up, and QEMU receives set_link up for the NIC. The machine is not restarted. If the wire touches a NAT network,
 // the group isolation rules are updated (syncNAT). Errors are returned as warnings: the wire is already saved.
-func (m *Manager) AttachLive(connID int64, setLink func(rid int64, nic int, up bool) error, hotplug func(rid int64, nic int, tap string) error) []error {
+func (m *Manager) AttachLive(labName, connKey string, setLink func(rid int64, nic int, up bool) error, hotplug func(rid int64, nic int, tap string) error) []error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var aT, bT string
-	var aID, bID int64
+	var aID, bID string
 	var aIf, bIf int
-	c, ok := m.connRow(connID)
+	c, ok := m.connRow(labName, connKey)
 	if !ok {
 		return []error{sql.ErrNoRows}
 	}
-	aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.ID, c.A.If, c.B.Type, c.B.ID, c.B.If
+	aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.Name, c.A.If, c.B.Type, c.B.Name, c.B.If
 	type end struct {
-		dev, peerID int64
+		dev, peerID string
 		nic         int
 		peerType    string
 	}
@@ -1202,9 +1215,10 @@ func (m *Manager) AttachLive(connID int64, setLink func(rid int64, nic int, up b
 			continue
 		}
 		type run struct {
-			rid, inst, lab int64
-			kind           string
-			start          int
+			rid, inst int64
+			lab       string
+			kind      string
+			start     int
 		}
 		var runs []run
 		for rows.Next() {
@@ -1227,32 +1241,32 @@ func (m *Manager) AttachLive(connID int64, setLink func(rid int64, nic int, up b
 				spec := &qemu.Spec{ID: r.rid, DeviceID: e.dev, InstanceID: r.inst, LabID: r.lab}
 				tap, err = m.tapFor(spec, e.nic)
 				if err != nil {
-					errs = append(errs, fmt.Errorf("машина %d, интерфейс %s: %w", r.rid, name, err))
+					errs = append(errs, msgs.Wrap(err, "Machine {id}, interface {iface}: {detail}", map[string]string{"id": fmt.Sprint(r.rid), "iface": name, "detail": err.Error()}))
 					continue
 				}
 				if hotplug == nil {
 					delLink(tap)
-					errs = append(errs, fmt.Errorf("интерфейс %s машины %d не создан: перезапустите машину", name, r.rid))
+					errs = append(errs, msgs.New("Interface {iface} of machine {id} was not created: restart the machine", map[string]string{"iface": name, "id": fmt.Sprint(r.rid)}))
 					continue
 				}
 				if err := hotplug(r.rid, e.nic, tap); err != nil {
 					delLink(tap)
-					errs = append(errs, fmt.Errorf("машина %d, интерфейс %s: %w", r.rid, name, err))
+					errs = append(errs, msgs.Wrap(err, "Machine {id}, interface {iface}: {detail}", map[string]string{"id": fmt.Sprint(r.rid), "iface": name, "detail": err.Error()}))
 					continue
 				}
-				log.Printf("network: провод %d: машина %d, интерфейс %s: TAP %s добавлен через QMP", connID, r.rid, name, tap)
+				log.Printf("network: cable %s: machine %d, interface %s: TAP %s added via QMP", connKey, r.rid, name, tap)
 			} else {
-				br, err := m.cableBridge(r.inst, connID, e.peerType, e.peerID)
+				br, err := m.cableBridge(r.lab, r.inst, connKey, e.peerType, e.peerID)
 				if err != nil {
 					errs = append(errs, err)
 					continue
 				}
-				if m.linkUp(r.inst, connID) {
+				if m.linkUp(r.inst, connKey) {
 					if _, err := ip("link", "set", tap, "master", br); err != nil {
 						errs = append(errs, err)
 						continue
 					}
-					log.Printf("network: провод %d: машина %d, интерфейс %s: TAP %s подключён к мосту %s", connID, r.rid, name, tap, br)
+					log.Printf("network: cable %s: machine %d, interface %s: TAP %s attached to bridge %s", connKey, r.rid, name, tap, br)
 				}
 				if _, err := ip("link", "set", tap, "up"); err != nil {
 					errs = append(errs, err)
@@ -1264,9 +1278,9 @@ func (m *Manager) AttachLive(connID int64, setLink func(rid int64, nic int, up b
 				// allowance under br_netfilter) and DHCP without waiting for background reconciliation.
 				natTouched = true
 			}
-			if setLink != nil && m.linkUp(r.inst, connID) {
+			if setLink != nil && m.linkUp(r.inst, connKey) {
 				if err := setLink(r.rid, e.nic, true); err != nil {
-					errs = append(errs, fmt.Errorf("машина %d, интерфейс %s: %w", r.rid, name, err))
+					errs = append(errs, msgs.Wrap(err, "Machine {id}, interface {iface}: {detail}", map[string]string{"id": fmt.Sprint(r.rid), "iface": name, "detail": err.Error()}))
 				}
 			}
 		}
@@ -1301,20 +1315,20 @@ func ifaceLabel(kind string, start, nic int) string {
 
 // PlanDetach returns the interfaces of running machines in all instances connected to the wires being removed.
 // Called BEFORE deleting connections rows: after deletion the "wire - machine" link can no longer be restored.
-func (m *Manager) PlanDetach(connIDs []int64) []Plug {
+func (m *Manager) PlanDetach(labName string, connKeys []string) []Plug {
 	var out []Plug
-	for _, cid := range connIDs {
+	for _, cid := range connKeys {
 		var aT, bT string
-		var aID, bID int64
+		var aID, bID string
 		var aIf, bIf int
-		c, ok := m.connRow(cid)
+		c, ok := m.connRow(labName, cid)
 		if !ok {
 			continue
 		}
-		aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.ID, c.A.If, c.B.Type, c.B.ID, c.B.If
+		aT, aID, aIf, bT, bID, bIf = c.A.Type, c.A.Name, c.A.If, c.B.Type, c.B.Name, c.B.If
 		for _, e := range []struct {
 			t   string
-			id  int64
+			id  string
 			nic int
 		}{{aT, aID, aIf}, {bT, bID, bIf}} {
 			if e.t != "device" {
@@ -1354,11 +1368,11 @@ func (m *Manager) Detach(plugs []Plug, setLink func(rid int64, nic int, up bool)
 			if err := unplug(p.RID, p.NIC); err == nil {
 				if tap, err := tapName(p.RID, p.NIC); err == nil {
 					delLink(tap)
-					log.Printf("network: машина %d, интерфейс %s: TAP %s удалён (провод удалён)", p.RID, name, tap)
+					log.Printf("network: machine %d, interface %s: TAP %s removed (cable removed)", p.RID, name, tap)
 				}
 				continue
 			} else {
-				errs = append(errs, fmt.Errorf("машина %d, интерфейс %s: горячее отключение не удалось: %w", p.RID, name, err))
+				errs = append(errs, msgs.Wrap(err, "Machine {id}, interface {iface}: hot unplug failed: {detail}", map[string]string{"id": fmt.Sprint(p.RID), "iface": name, "detail": err.Error()}))
 			}
 		}
 		// Rollback: if hot-unplug is unavailable, the interface remains but the link is disabled,
@@ -1372,12 +1386,12 @@ func (m *Manager) Detach(plugs []Plug, setLink func(rid int64, nic int, up bool)
 			if _, err := ip("link", "set", tap, "nomaster"); err != nil {
 				errs = append(errs, err)
 			} else {
-				log.Printf("network: машина %d, интерфейс %s: TAP %s выведен из моста (горячее отключение недоступно)", p.RID, name, tap)
+				log.Printf("network: machine %d, interface %s: TAP %s removed from bridge (hot unplug unavailable)", p.RID, name, tap)
 			}
 		}
 		if setLink != nil {
 			if err := setLink(p.RID, p.NIC, false); err != nil {
-				errs = append(errs, fmt.Errorf("машина %d, интерфейс %s: %w", p.RID, name, err))
+				errs = append(errs, msgs.Wrap(err, "Machine {id}, interface {iface}: {detail}", map[string]string{"id": fmt.Sprint(p.RID), "iface": name, "detail": err.Error()}))
 			}
 		}
 	}

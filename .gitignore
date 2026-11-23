@@ -10,6 +10,7 @@ frontend/.vite/
 frontend/.vite-temp/
 frontend/coverage/
 release/
+CLAUDE.md
 
 # Embedded static files are built from frontend/src and are not stored in the repo:
 # their contents (assets/, index.html, console.html, img/) are ignored here,

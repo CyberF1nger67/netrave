@@ -15,6 +15,7 @@ export const paths = {
   journal: '/journal',
   settings: '/settings',
   users: '/users',
+  messages: '/messages',
   roles: '/roles',
   /** Human-readable folder URL: `/labs/<folder_name>`. */
   folder: (folderName: string) => `/labs/${segment(folderName)}`,
@@ -23,19 +24,16 @@ export const paths = {
   /** Lab URL inside a folder: `/labs/<folder_name>/<lab_name>`. */
   lab: (folderName: string, labName: string, instanceId?: number | string) =>
     `/labs/${segment(folderName)}/${segment(labName)}${instance(instanceId)}`,
-  /**
-      * Numeric editor URL `/labs/<id>/editor`: built by notifications and running labs,
-      * it opens the same lab by number and preserves the instance parameter.
-   */
-  editor: (labId: number | string, instanceId?: number | string) =>
-    `/labs/${labId}/editor${instance(instanceId)}`,
+  /** Editor URL built by notifications and running labs: `/labs/<name>/editor`. */
+  editor: (labName: string, instanceId?: number | string) =>
+    `/labs/${segment(labName)}/editor${instance(instanceId)}`,
 } as const;
 
 /**
   * Builds a human-readable lab URL from its folder. Root and folder names are unique together,
   * so `/labs/<name>` unambiguously points either to a folder or to a lab at the root.
  */
-export function labPath(lab: { name: string; folder_id: number }, folderName?: string | null, instanceId?: number | string): string {
-  if (!lab.folder_id) return paths.rootLab(lab.name, instanceId);
-  return paths.lab(folderName ?? String(lab.folder_id), lab.name, instanceId);
+export function labPath(lab: { name: string; folder_id?: string }, _folderName?: string | null, instanceId?: number | string): string {
+  // Laboratory names are unique across the whole tree, so one URL shape serves every lab.
+  return paths.editor(lab.name, instanceId);
 }

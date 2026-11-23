@@ -28,34 +28,34 @@ describe('importLabFile', () => {
   });
 
   it('sends the file text as is: the server parses YAML', async () => {
-    mocks.importLab.mockResolvedValue({ id: 42, warnings: [] });
+    mocks.importLab.mockResolvedValue({ id: 'Test', warnings: [] });
     mocks.placeLab.mockResolvedValue({ ok: true });
 
-    const id = await importLabFile(file(exportYAML), 7);
+    const id = await importLabFile(file(exportYAML), 'Course');
 
-    expect(id).toBe(42);
+    expect(id).toBe('Test');
     expect(mocks.importLab).toHaveBeenCalledWith(exportYAML);
-    expect(mocks.placeLab).toHaveBeenCalledWith(42, 7);
+    expect(mocks.placeLab).toHaveBeenCalledWith('Test', 'Course');
     expect(mocks.toast.success).toHaveBeenCalled();
   });
 
   it('keeps the lab at the root when no folder is open', async () => {
-    mocks.importLab.mockResolvedValue({ id: 5 });
-    await importLabFile(file(exportYAML), 0);
+    mocks.importLab.mockResolvedValue({ id: 'Five' });
+    await importLabFile(file(exportYAML), '');
     expect(mocks.placeLab).not.toHaveBeenCalled();
   });
 
   it('does not call the server for files larger than the limit', async () => {
     const big = file('x');
     Object.defineProperty(big, 'size', { value: MAX_IMPORT_BYTES + 1 });
-    await expect(importLabFile(big, 0)).rejects.toThrow();
+    await expect(importLabFile(big, '')).rejects.toThrow();
     expect(mocks.importLab).not.toHaveBeenCalled();
   });
 
   it('reports server warnings without failing the import', async () => {
-    mocks.importLab.mockResolvedValue({ id: 9, warnings: ['образ не найден'] });
-    const id = await importLabFile(file(exportYAML), 0);
-    expect(id).toBe(9);
+    mocks.importLab.mockResolvedValue({ id: 'Nine', warnings: ['image not found'] });
+    const id = await importLabFile(file(exportYAML), '');
+    expect(id).toBe('Nine');
     expect(mocks.toast.warning).toHaveBeenCalled();
   });
 

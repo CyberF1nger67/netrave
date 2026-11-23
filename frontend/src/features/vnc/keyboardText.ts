@@ -8,18 +8,18 @@
 // host keyboard layout, because keysyms do not depend on the host layout.
 
 export const KEYSYM_SHIFT_L = 0xffe1;
-export const KEYSYM_ENTER = 0xff0d;
-export const KEYSYM_TAB = 0xff09;
+const KEYSYM_ENTER = 0xff0d;
+const KEYSYM_TAB = 0xff09;
 
 // Symbols that need Shift on a US (en-us) layout. Uppercase letters are handled separately.
 const US_SHIFTED_SYMBOLS = new Set(['~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', '{', '}', '|', ':', '"', '<', '>', '?']);
 
-export interface KeyStep {
+interface KeyStep {
   keysym: number;
   down: boolean;
 }
 
-export interface TypingPlan {
+interface TypingPlan {
   steps: KeyStep[];
   // Characters that cannot be produced by a keysym on a US-layout guest (for example Cyrillic).
   skipped: number;

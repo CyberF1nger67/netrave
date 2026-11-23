@@ -29,10 +29,14 @@ func DirAllocated(dir string) uint64 {
 	return total
 }
 
-// Disk returns the space used by one instance machine: the labs/<lab>/<rid> directory
-// (working overlays disk*.qcow2, UEFI variables, boot log). Other machines and the server are excluded.
-func (m *Manager) Disk(labID, rid int64) uint64 {
-	return DirAllocated(DevicePaths(m.cfg.LabsDir, m.cfg.RunDir, labID, rid).Dir)
+// Disk returns the space used by one instance machine: its working directory (working overlays disk*.qcow2,
+// UEFI variables). Other machines and the server are excluded.
+func (m *Manager) Disk(rid int64) uint64 {
+	p, err := WorkDir(m.db, m.cfg.InstancesDir, rid)
+	if err != nil || p.Dir == "" {
+		return 0
+	}
+	return DirAllocated(p.Dir)
 }
 
 // ProcessRSS returns the resident memory (VmRSS) of a live QEMU process by its pid.

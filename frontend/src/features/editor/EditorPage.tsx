@@ -1,3 +1,4 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -14,8 +15,8 @@ import { NotificationBell } from '../notifications/NotificationBell';
 import { AccessDialog, LabDialog, WipeLabDialog } from '../labs/LabDialogs';
 import { StatusDialog } from '../status/StatusDialog';
 import { Icon } from '../../components/Icon';
-import { t, useLanguageStore } from '../../i18n';
-import { AddMachineDialog, ConnectDialog, DeviceSettingsDialog, LogDialog, NetworkSettingsDialog, SnapshotsDialog } from './dialogs';
+import { t, translateMessage, useLanguageStore } from '../../i18n';
+import { AddMachineDialog, ConnectDialog, DeviceSettingsDialog, LogDialog, NetworkSettingsDialog, SaveImageDialog } from './dialogs';
 import { ContextMenu, type MenuItem } from './ContextMenu';
 import { useFitOnEntry } from './useFitOnEntry';
 import { BASE_ICON_SIZE, clampIconSize, fitPoints, iconSizeOf, MIN_ZOOM, type View } from './viewFit';
@@ -67,10 +68,10 @@ function nicMAC(rid: number, nic: number): string {
 }
 
 type Key = string;
-const keyOfDevice = (id: number): Key => `d${id}`;
-const keyOfNetwork = (id: number): Key => `n${id}`;
-const keyOfConnection = (id: number): Key => `c${id}`;
-const idOf = (key: Key): number => Number(key.slice(1));
+const keyOfDevice = (id: string): Key => `d${id}`;
+const keyOfNetwork = (id: string): Key => `n${id}`;
+const keyOfConnection = (id: string): Key => `c${id}`;
+const idOf = (key: Key): string => key.slice(1);
 
 /** Spacing between parallel wires connecting the same pair of nodes. */
 const CABLE_GAP = 12;
@@ -104,16 +105,16 @@ const connectionPairKey = (connection: Connection): string => {
   * Offset of the wire across the line. Several wires between the same pair of nodes
   * are laid out side by side (by ascending id) instead of being drawn on top of each other.
  */
-function cableLaneOffsets(connections: Connection[]): Map<number, number> {
+function cableLaneOffsets(connections: Connection[]): Map<string, number> {
   const groups = new Map<string, Connection[]>();
   for (const connection of connections) {
     const key = connectionPairKey(connection);
     const group = groups.get(key);
     if (group) group.push(connection); else groups.set(key, [connection]);
   }
-  const offsets = new Map<number, number>();
+  const offsets = new Map<string, number>();
   for (const group of groups.values()) {
-    group.sort((left, right) => left.id - right.id);
+    group.sort((left, right) => left.id.localeCompare(right.id));
     group.forEach((connection, index) => {
       offsets.set(connection.id, (index - (group.length - 1) / 2) * CABLE_GAP);
     });
@@ -126,33 +127,35 @@ type Dialog =
   | { kind: 'device'; device: Device }
   | { kind: 'network'; network: Network }
   | { kind: 'connect'; a: Key; b: Key }
-  | { kind: 'snapshots'; device: Device }
+  | { kind: 'saveImage'; device: Device }
   | { kind: 'log'; device: Device }
   | { kind: 'status' }
   | { kind: 'lab' }
   | { kind: 'access' }
   | { kind: 'wipe' };
 
-export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?: number | undefined; instanceOverride?: number | undefined } = {}) {
+export function EditorPage({ labName, instanceOverride }: { labName?: string | undefined; instanceOverride?: number | undefined } = {}) {
   const params = useParams();
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const user = useAuthStore((state) => state.user);
-  const labId = labIdOverride ?? (Number.parseInt(params['labId'] ?? params['id'] ?? '', 10) || 0);
+  // The laboratory name is the identifier; the numeric variable name is kept for the many
+  // URL and query-key usages below.
+  const labId = labName ?? params['labName'] ?? params['folderName'] ?? '';
   const instanceId = instanceOverride ?? (Number.parseInt(search.get('instance') ?? search.get('i') ?? '', 10) || 0);
 
   const topologyQuery = useQuery({
     queryKey: ['topology', labId, instanceId],
     queryFn: () => labsApi.topology(labId, instanceId || undefined),
-    enabled: labId > 0,
+    enabled: Boolean(labId),
     // The topology contains not only the diagram but also machine state (running/stopped, PID).
     // It cannot be kept "forever fresh": when reopening another user's instance from
     // "Running labs", a stale snapshot was shown until polling fired after 4 s.
     staleTime: 0,
     refetchOnMount: 'always',
   });
-  const templatesQuery = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list, enabled: labId > 0 });
-  const imagesQuery = useQuery({ queryKey: ['images'], queryFn: () => imagesApi.list(), enabled: labId > 0 });
+  const templatesQuery = useQuery({ queryKey: ['templates'], queryFn: templatesApi.list, enabled: Boolean(labId) });
+  const imagesQuery = useQuery({ queryKey: ['images'], queryFn: () => imagesApi.list(), enabled: Boolean(labId) });
 
   const [lab, setLab] = useState<Lab | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
@@ -172,7 +175,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [band, setBand] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [tempLink, setTempLink] = useState<{ x1: number; y1: number; x2: number; y2: number } | null>(null);
-  const [clip, setClip] = useState<{ devices: number[]; networks: number[] } | null>(null);
+  const [clip, setClip] = useState<{ devices: string[]; networks: string[] } | null>(null);
   /** The session (lab + instance) whose topology is currently loaded into the component state. */
   const [syncedKey, setSyncedKey] = useState<string | null>(null);
   const pasteN = useRef(0);
@@ -180,7 +183,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
   /** Session whose saved canvas (camera and fallback icon size) has been loaded into state. */
   const canvasLoaded = useRef<string | null>(null);
   /** Sizes already changed on screen but not yet confirmed by the server. */
-  const pendingIconSizes = useRef<Map<number, number>>(new Map());
+  const pendingIconSizes = useRef<Map<string, number>>(new Map());
   /** While dragging a handle the icon changes without animation - otherwise it lags behind the cursor. */
   const [iconResizing, setIconResizing] = useState(false);
   const dragging = useRef(false);
@@ -190,8 +193,8 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
   const pollTimer = useRef(0);
   // Deleted wires and newly created ones: responses from polling/cache started before the change
   // must not bring them back to the diagram (otherwise the cable "blinks" after deletion).
-  const doomedConns = useRef<Set<number>>(new Set());
-  const pendingConns = useRef<Map<number, Connection>>(new Map());
+  const doomedConns = useRef<Set<string>>(new Set());
+  const pendingConns = useRef<Map<string, Connection>>(new Map());
   const lastClick = useRef<{ key: string; at: number } | null>(null);
   const hoverTimer = useRef<number | null>(null);
   const spaceRef = useRef(false);
@@ -449,7 +452,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
   };
 
   const selectionParts = (keys: Set<Key> = selection) => {
-    const dev: number[] = [], net: number[] = [], con: number[] = [];
+    const dev: string[] = [], net: string[] = [], con: string[] = [];
     for (const key of keys) (key[0] === 'd' ? dev : key[0] === 'n' ? net : con).push(idOf(key));
     return { dev, net, con };
   };
@@ -464,12 +467,12 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
     }
     const total = dev.length + net.length + con.length;
     if (!total) return;
-    if ((keys ?? selection).size > 1 && total > 1 && !confirm(`${t('Delete selected objects?')} (${total})`)) return;
+    if ((keys ?? selection).size > 1 && total > 1 && !(await askConfirm({ title: `${t('Delete selected objects?')} (${total})`, danger: true }))) return;
     const liveCable = connections.some((connection) => con.includes(connection.id) && [connection.a_type === 'device' ? connection.a_id : 0, connection.b_type === 'device' ? connection.b_id : 0].some((id) => {
       const device = devices.find((item) => item.id === id);
       return device && (device.state === 'running' || device.state === 'paused');
     }));
-    if (liveCable && !confirm(t('The cable is connected to a running machine. It will be disconnected immediately. Delete?'))) return;
+    if (liveCable && !(await askConfirm({ title: t('The cable is connected to a running machine. It will be disconnected immediately. Delete?'), danger: true }))) return;
     // Remove wires immediately without waiting for a response: server synchronization (TAP/QMP) may
     // take time, while the diagram state must change instantly. On error, restore them.
     const doomed = connections.filter((connection) => con.includes(connection.id)
@@ -484,7 +487,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
       setConnections((current) => [...current, ...snapshot.filter((saved) => !current.some((connection) => connection.id === saved.id))]);
       return;
     }
-    (result.warnings ?? []).forEach((warning) => toast.warning(`${t('Cable disconnected, but the interface is still attached:')} ${warning}`));
+    (result.warnings ?? []).forEach((warning) => toast.warning(`${t('Cable disconnected, but the interface is still attached:')} ${translateMessage(warning.key, warning.params)}`));
     setDevices((current) => current.filter((device) => !dev.includes(device.id)));
     setNetworks((current) => current.filter((network) => !net.includes(network.id)));
     setSelection(new Set());
@@ -658,6 +661,15 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
   };
 
+  // Double-click on a machine and the sidebar "Console" button share one path: the machine's
+  // terminal goes to the active terminal window, or opens a floating one.
+  const openDeviceConsole = (device: (typeof devices)[number]): void => {
+    if (device.state !== 'running' && device.state !== 'paused') { toast.error(t('Device is not running — start it to open the console')); return; }
+    const need = device.console === 'vnc' ? 'console.vnc' : 'console.serial';
+    if (!allow(need)) { toast.error(t('No rights to the console of this machine')); return; }
+    openConsole({ rid: device.rid, name: device.name, lab_id: labId, state: device.state, console: device.console, lab_perms: lab?.perms ?? {} }, device.console === 'vnc' ? 'vnc' : 'serial');
+  };
+
   const onCanvasDown = (event: React.MouseEvent) => {
     if (event.button === 2) return;
     const target = event.target instanceof Element ? event.target : null;
@@ -677,12 +689,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
       if (key[0] === 'd' && lastClick.current?.key === key && now - lastClick.current.at < 450) {
         lastClick.current = null;
         const device = devices.find((item) => item.id === idOf(key));
-        if (device) {
-          if (device.state !== 'running' && device.state !== 'paused') { toast.error(t('Device is not running — start it to open the console')); return; }
-          const need = device.console === 'vnc' ? 'console.vnc' : 'console.serial';
-          if (!allow(need)) { toast.error(t('No rights to the console of this machine')); return; }
-          openConsole({ rid: device.rid, name: device.name, lab_id: labId, state: device.state, console: device.console, lab_perms: lab?.perms ?? {} }, device.console === 'vnc' ? 'vnc' : 'serial');
-        }
+        if (device) openDeviceConsole(device);
         return;
       }
       lastClick.current = key[0] === 'd' ? { key, at: now } : null;
@@ -714,7 +721,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
     if (allow('machine.start') || allow('machine.stop') || allow('machine.restart')) items.push({ separator: true });
     items.push({ label: device.console === 'vnc' ? t('Open screen (VNC)') : t('Open terminal'), disabled: !live || !allow(device.console === 'vnc' ? 'console.vnc' : 'console.serial'), run: () => openConsole({ rid: device.rid, name: device.name, lab_id: labId, state: device.state, console: device.console, lab_perms: lab?.perms ?? {} }) }, { separator: true });
     if (allow('machine.edit')) items.push({ label: t('Settings…'), run: () => setDialog({ kind: 'device', device }) });
-    if (allow('machine.snapshot')) items.push({ label: t('Snapshots…'), run: () => setDialog({ kind: 'snapshots', device }) });
+    if (allow('machine.snapshot')) items.push({ label: t('Save image…'), run: () => setDialog({ kind: 'saveImage', device }) });
     items.push({ label: t('Start log…'), run: () => setDialog({ kind: 'log', device }) });
     if (allow('machine.clone')) items.push({ label: t('Clone'), disabled: !idle, run: () => void cloneDevice(device) });
     if (allow('machine.wipe')) items.push({ label: t('Wipe (reset disk)…'), run: () => void wipeDevice(device) });
@@ -769,9 +776,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
       if (allow('machine.add') || allow('net.manage')) items.push(
         { label: t('Add machine'), run: () => setDialog({ kind: 'add-machine', x, y }) },
         { label: t('Add network'), sub: [
-          { label: t('Isolated'), run: () => void addNetwork('isolated', x, y) },
           { label: t('NAT'), run: () => void addNetwork('nat', x, y) },
-          { label: t('Cloud'), run: () => void addNetwork('cloud', x, y) },
         ] },
         { separator: true },
         { label: t('Paste'), disabled: !clip, run: () => void pasteClipboard() });
@@ -791,11 +796,11 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
   };
   const wipeDevice = async (device: Device) => {
     if (!allow('machine.wipe')) { toast.error(t('No rights to reset the disk')); return; }
-    if (!confirm(`${t('Reset disk of device?')} (${device.name})`)) return;
+    if (!(await askConfirm({ title: `${t('Reset disk of device?')} (${device.name})`, danger: true }))) return;
     await deviceAction(device, 'wipe');
   };
   const setCable = async (connection: Connection, up: boolean) => {
-    await run(async () => { await labsApi.setConnectionState(connection.id, up, instanceId || undefined); setConnections((current) => current.map((item) => item.id === connection.id ? { ...item, up } : item)); }, up ? t('Cable connected') : t('Cable disconnected'));
+    await run(async () => { await labsApi.setConnectionState(labId, connection.key, up, instanceId || undefined); setConnections((current) => current.map((item) => item.id === connection.id ? { ...item, up } : item)); }, up ? t('Cable connected') : t('Cable disconnected'));
   };
   const addNetwork = async (type: string, x: number, y: number) => {
     const network = await run(() => labsApi.createNetwork(labId, type, x, y));
@@ -865,9 +870,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
               <div className={groupClass}><div className={groupTitle}>{t('Add')}</div>
                 {canAddMachine && <Tool label={t('Machine')} icon="machine" run={() => { const [x, y] = centerWorld(); setDialog({ kind: 'add-machine', x, y }); }} />}
                 {canManageNetworks && <>
-                  <Tool label={t('Isolated')} icon="network" run={() => { const [x, y] = centerWorld(); void addNetwork('isolated', x, y); }} />
                   <Tool label={t('NAT')} icon="network" run={() => { const [x, y] = centerWorld(); void addNetwork('nat', x, y); }} />
-                  <Tool label={t('Cloud')} icon="network" run={() => { const [x, y] = centerWorld(); void addNetwork('cloud', x, y); }} />
                 </>}
               </div>
             )}
@@ -894,7 +897,12 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
           </div>
           <div data-editor-side-foot className="flex-none border-t border-line bg-panel px-[9px] pb-2.5 pt-2">
             <button type="button" className="group/tool flex min-h-10 w-full items-center justify-start gap-3 rounded-[11px] border border-accent/35 bg-accent/[.12] px-[11px] py-2 text-[13.5px] font-semibold text-text transition-[background,border-color] duration-200 hover:border-accent/55 hover:bg-accent/[.18]" title={t('Console')}
-              onClick={(event) => showConsoleLauncher(event.currentTarget)}>
+              onClick={(event) => {
+                // A selected machine opens exactly as a double-click would; otherwise the usual launcher.
+                const key = [...selection].find((item) => item[0] === 'd');
+                const device = key ? devices.find((item) => item.id === idOf(key)) : undefined;
+                if (device) openDeviceConsole(device); else showConsoleLauncher(event.currentTarget);
+              }}>
               <Icon name="term" className="text-accent transition-transform duration-200 group-hover/tool:scale-110" /><span className={`max-w-[200px] overflow-hidden text-ellipsis whitespace-nowrap transition-[opacity,max-width] duration-200 ${collapsed ? 'min-[901px]:max-w-0 min-[901px]:opacity-0' : ''}`}>{t('Console')}</span>
             </button>
           </div>
@@ -995,7 +1003,7 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
                       {network.type === 'cloud' || network.type === 'nat' ? (
                         <>{sel && <rect x={-46} y={-32} width={92} height={64} rx={10} fill="none" stroke="var(--accent)" strokeWidth={2} pointerEvents="none" />}<rect fill="transparent" x={-42} y={-28} width={84} height={56} rx={8} /><image href={iconFor(network.type)} x={-42} y={-28} width={84} height={56} pointerEvents="none" /></>
                       ) : <circle r={26} fill="#444b57" stroke={sel ? 'var(--accent)' : 'var(--line)'} strokeWidth={sel ? 3 : 2} />}
-                      {network.type === 'isolated' && <text y={6} textAnchor="middle" fontSize={14} fontWeight={700} fill="#fff" pointerEvents="none">NET</text>}
+                      {network.type === 'isolated' && <text y={6} textAnchor="middle" fontSize={14} fontWeight={700} fill="#fff" pointerEvents="none">{t('NET')}</text>}
                       <text data-node-label y={44} textAnchor="middle" fontSize={12} fill="var(--text)" pointerEvents="none">{network.name}</text>
                     </g>
                   );
@@ -1010,13 +1018,13 @@ export function EditorPage({ labIdOverride, instanceOverride }: { labIdOverride?
       {menu && <ContextMenu x={menu.x} y={menu.y} items={menu.items} onClose={() => setMenu(null)} />}
       {dialog?.kind === 'add-machine' && <AddMachineDialog labId={labId} x={dialog.x} y={dialog.y} templates={templates} images={images} onClose={() => setDialog(null)}
         onDone={(created) => { setDevices((current) => [...current, ...created]); setSelection(new Set(created.map((device) => keyOfDevice(device.id)))); }} />}
-      {dialog?.kind === 'device' && <DeviceSettingsDialog device={dialog.device} images={images} onClose={() => setDialog(null)}
+      {dialog?.kind === 'device' && <DeviceSettingsDialog labName={lab.name} device={dialog.device} images={images} onClose={() => setDialog(null)}
         onSaved={(saved) => { setDevices((current) => current.map((device) => device.rid === saved.rid ? saved : device)); void refreshTopology(true); }} />}
-      {dialog?.kind === 'network' && <NetworkSettingsDialog network={dialog.network} onClose={() => setDialog(null)} onSaved={() => { void refreshTopology(true); }} />}
+      {dialog?.kind === 'network' && <NetworkSettingsDialog labName={lab.name} network={dialog.network} onClose={() => setDialog(null)} onSaved={() => { void refreshTopology(true); }} />}
       {dialog?.kind === 'connect' && <ConnectDialog labId={labId} a={dialog.a} b={dialog.b} devices={devices} networks={networks} connections={connections}
         onClose={() => setDialog(null)}
-        onConnected={(connection) => { pendingConns.current.set(connection.id, connection); setConnections((current) => [...current, connection]); void refreshTopology(true); }} />}
-      {dialog?.kind === 'snapshots' && <SnapshotsDialog device={dialog.device} onClose={() => setDialog(null)} onChanged={() => { void refreshImages(); void refreshTopology(true); }} />}
+        onConnected={(connection) => { pendingConns.current.set(connection.key, connection); setConnections((current) => [...current, connection]); void refreshTopology(true); }} />}
+      {dialog?.kind === 'saveImage' && <SaveImageDialog device={dialog.device} onClose={() => setDialog(null)} onChanged={() => { void refreshImages(); void refreshTopology(true); }} />}
       {dialog?.kind === 'log' && <LogDialog device={dialog.device} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'status' && <StatusDialog labId={labId} labName={lab.name} instance={instanceId || undefined} onClose={() => setDialog(null)} />}
       {dialog?.kind === 'lab' && <LabDialog lab={lab} onClose={() => setDialog(null)} onSaved={() => { void refreshTopology(true); }} />}

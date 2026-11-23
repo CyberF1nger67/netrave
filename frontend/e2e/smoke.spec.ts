@@ -3,9 +3,9 @@ import { expect, test } from '@playwright/test';
 const password = process.env['NETRAVE_PASSWORD'] ?? '';
 const username = process.env['NETRAVE_USER'] ?? 'admin';
 
-test.skip(!password, 'NETRAVE_PASSWORD не задан');
+test.skip(!password, 'NETRAVE_PASSWORD is not set');
 
-test('вход и основные разделы', async ({ page }) => {
+test('sign in and main sections', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Log in to NetRave' })).toBeVisible();
   await page.locator('#auth-user').fill(username);
@@ -30,7 +30,7 @@ test('вход и основные разделы', async ({ page }) => {
   }
 });
 
-test('создание лаборатории и редактор', async ({ page }) => {
+test('create a laboratory and open the editor', async ({ page }) => {
   await page.goto('/');
   await page.locator('#auth-user').fill(username);
   await page.locator('#auth-pass').fill(password);

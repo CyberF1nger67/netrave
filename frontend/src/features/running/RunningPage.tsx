@@ -1,9 +1,9 @@
+import { askConfirm } from '../../stores/dialogs';
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { labPath, paths } from '../../routing/paths';
-import { folderNameOf } from '../../routing/labLookup';
-import { devicesApi, foldersApi, labsApi } from '../../api/endpoints';
+import { devicesApi, labsApi } from '../../api/endpoints';
 import type { MachineStatus, RunningLab } from '../../types/api';
 import { useAuthStore } from '../../stores/auth';
 import { guard } from '../../stores/toast';
@@ -47,8 +47,8 @@ function MachineRow({ row, machine }: { row: RunningLab; machine: MachineStatus 
   const label = t(labelKey as Parameters<typeof t>[0]);
   const live = machine.running;
   const moving = machine.state === 'starting' || machine.state === 'stopping';
-  const act = (action: string, question?: string) => {
-    if (question && !confirm(question)) return;
+  const act = async (action: string, question?: string) => {
+    if (question && !(await askConfirm({ title: question }))) return;
     void guard(async () => {
       await devicesApi.action(machine.rid, action);
       await queryClient.invalidateQueries({ queryKey: ['lab-status', row.instance_id] });
@@ -62,7 +62,7 @@ function MachineRow({ row, machine }: { row: RunningLab; machine: MachineStatus 
         <div className="min-w-0"><b className="[overflow-wrap:anywhere]">{machine.name}</b><div className="text-[11.5px] text-muted">{machine.type}{machine.pid ? ` · PID ${machine.pid}` : ''}</div></div>
       </div>
       <div className={`inline-flex flex-none items-center gap-1.5 whitespace-nowrap text-[12.5px] font-semibold ${textTone[cls] ?? 'text-muted'}`}><i className="size-[7px] rounded-full bg-current" />{label}</div>
-      <div className="flex flex-none flex-col tabular-nums"><span className="text-[10.5px] uppercase tracking-[.05em] text-muted">CPU</span><b>{live ? (machine.cpu_ready ? fmtPct(machine.cpu_pct) : '…') : '—'}</b></div>
+      <div className="flex flex-none flex-col tabular-nums"><span className="text-[10.5px] uppercase tracking-[.05em] text-muted">{t('CPU')}</span><b>{live ? (machine.cpu_ready ? fmtPct(machine.cpu_pct) : '…') : '—'}</b></div>
       <div className="flex flex-none flex-col tabular-nums"><span className="text-[10.5px] uppercase tracking-[.05em] text-muted">{t('RAM')}</span><b>{live ? fmtBytes(machine.ram_bytes) : '—'}</b></div>
       <div className="flex flex-none flex-col tabular-nums"><span className="text-[10.5px] uppercase tracking-[.05em] text-muted">{t('Disk')}</span><b>{fmtBytes(machine.disk_bytes)}</b></div>
       <div className="flex flex-1 flex-wrap justify-end gap-[5px] max-sm:justify-start [&>button]:w-[132px] [&>button]:min-h-[30px] [&>button]:justify-center [&>button]:px-2.5 [&>button]:py-[5px] [&>button]:text-[12.5px]">
@@ -117,8 +117,8 @@ function RunningCard({ row, onWipe, editorPath }: { row: RunningLab; onWipe: (ro
     await (start ? labsApi.startAll(row.id, row.instance_id) : labsApi.stopAll(row.id, row.instance_id));
     await queryClient.invalidateQueries({ queryKey: ['running'] });
   });
-  const restart = () => {
-    if (!confirm(`${t('Restart')} (${row.name}, ${row.instance_user})?`)) return;
+  const restart = async () => {
+    if (!(await askConfirm({ title: `${t('Restart')} (${row.name}, ${row.instance_user})?` }))) return;
     void guard(async () => {
       const status = await labsApi.status(row.id, row.instance_id);
       for (const machine of status.machines.filter((item) => item.running)) await devicesApi.action(machine.rid, 'restart');
@@ -151,7 +151,7 @@ function RunningCard({ row, onWipe, editorPath }: { row: RunningLab; onWipe: (ro
         </div>
       </div>
       <div className="mt-3.5 grid grid-cols-2 gap-3.5 border-t border-line pt-3">
-        <div><div className="text-[11px] font-semibold uppercase tracking-[.06em] text-muted">CPU</div><div className="mt-0.5 text-sm font-semibold tabular-nums">{row.running && row.cpu_ready ? `${fmtNum(Number((row.cpu_pct / 100).toFixed(2)))} ${t('cores')} · ${fmtPct(share)} ${t('all host cores')}` : row.running ? t('Loading…') : '—'}</div>
+        <div><div className="text-[11px] font-semibold uppercase tracking-[.06em] text-muted">{t('CPU')}</div><div className="mt-0.5 text-sm font-semibold tabular-nums">{row.running && row.cpu_ready ? `${fmtNum(Number((row.cpu_pct / 100).toFixed(2)))} ${t('cores')} · ${fmtPct(share)} ${t('all host cores')}` : row.running ? t('Loading…') : '—'}</div>
           <div className="mt-[7px] h-1.5 overflow-hidden rounded-full bg-panel3"><i className="block h-full rounded-full bg-gradient-to-r from-accent to-accent-2 transition-[width] duration-500" style={{ width: `${share}%` }} /></div></div>
         <div><div className="text-[11px] font-semibold uppercase tracking-[.06em] text-muted">{t('RAM')}</div><div className="mt-0.5 text-sm font-semibold tabular-nums">{row.running ? fmtBytes(row.ram_bytes) : '—'}</div><div className="mt-1 text-xs text-muted">{row.running ? t('QEMU processes') : t('machines are stopped')}</div></div>
       </div>
@@ -177,14 +177,8 @@ export function RunningPage() {
   const [wipe, setWipe] = useState<RunningLab | null>(null);
   useLanguageStore((state) => state.language);
   const query = useQuery({ queryKey: ['running'], queryFn: () => labsApi.running(), refetchInterval: 4000 });
-  // The editor URL is built from the lab's folder: `/labs/<folder>/<lab>`.
-  const folders = useQuery({ queryKey: ['folders'], queryFn: foldersApi.list, staleTime: 60_000 });
-  const labs = useQuery({ queryKey: ['labs'], queryFn: () => labsApi.list(), staleTime: 60_000 });
-  const editorPath = (row: RunningLab) => {
-    const lab = (labs.data ?? []).find((item) => item.id === row.id);
-    const folderId = lab?.folder_id ?? 0;
-    return labPath({ name: row.name, folder_id: folderId }, folderNameOf(folders.data ?? [], folderId), row.instance_id);
-  };
+  // Laboratory names are unique, so the editor URL needs only the name.
+  const editorPath = (row: RunningLab) => labPath({ name: row.name }, undefined, row.instance_id);
   const rows = query.data ?? [];
   const owners = useMemo(() => [...new Set(rows.map((row) => row.owner))].sort((a, b) => a.localeCompare(b, 'ru')), [rows]);
   const filtered = rows.filter((row) => {

@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"netrave/internal/hostarch"
+	"netrave/internal/msgs"
 )
 
 // DiskSpec is one device disk: a file from the image folder (read-only) and the device's working layer on top of it.
@@ -20,10 +23,11 @@ type DiskSpec struct {
 
 // Spec holds everything needed to start a single virtual machine.
 type Spec struct {
-	ID         int64 // rid: machine row in the instance (instance_devices.id) - key for process, TAP, ports, overlays
-	DeviceID   int64 // machine in the topology (devices.id) - used for wires
-	InstanceID int64 // user's lab instance
-	LabID      int64
+	ID         int64  // rid: machine row in the instance (instance_devices.id) - key for process, TAP, ports, overlays
+	DeviceID   string // machine name in the topology - used for wires and for the log file name
+	InstanceID int64  // user's lab instance
+	LabID      string // lab name
+	Owner      string // login name of the instance owner - names the log directory
 	Name       string
 	Arch       string
 	Machine    string
@@ -42,14 +46,38 @@ type Spec struct {
 // Paths are the device files.
 type Paths struct{ Dir, Vars, Log, QMP string }
 
-func DevicePaths(labsDir, runDir string, labID, devID int64) Paths {
-	dir := filepath.Join(labsDir, strconv.FormatInt(labID, 10), strconv.FormatInt(devID, 10))
-	return Paths{
-		Dir:  dir,
-		Vars: filepath.Join(dir, "OVMF_VARS.fd"),
-		Log:  filepath.Join(dir, "qemu.log"),
-		QMP:  filepath.Join(runDir, fmt.Sprintf("d%d.qmp", devID)),
+// workPaths returns the working directory of a machine: <instances>/<owner>/<lab>/<device>/, where the disks
+// live. Dir is empty when a name cannot be used as a path element.
+func workPaths(instancesDir, owner, lab, device string) Paths {
+	if !safeElement(owner) || !safeElement(lab) || !safeElement(device) {
+		return Paths{}
 	}
+	dir := filepath.Join(instancesDir, owner, lab, device)
+	return Paths{Dir: dir, Vars: filepath.Join(dir, "OVMF_VARS.fd")}
+}
+
+// LogFile returns the QEMU log of a machine: <logs>/<owner>/<lab>/<device>.log. It returns an empty string
+// when a name cannot be used as a path element.
+func LogFile(logsDir, owner, lab, device string) string {
+	if !safeElement(owner) || !safeElement(lab) || !safeElement(device) {
+		return ""
+	}
+	return filepath.Join(logsDir, owner, lab, device+".log")
+}
+
+// safeElement reports whether name is usable as one path element: not empty, not a relative link,
+// and without separators.
+func safeElement(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\\\x00")
+}
+
+// DevicePaths returns the files of an instance machine described by s: working directory, OVMF variables,
+// QEMU log and QMP socket. The QMP socket lives under the run directory.
+func DevicePaths(instancesDir, logsDir, runDir string, s *Spec) Paths {
+	p := workPaths(instancesDir, s.Owner, s.LabID, s.DeviceID)
+	p.Log = LogFile(logsDir, s.Owner, s.LabID, s.DeviceID)
+	p.QMP = filepath.Join(runDir, fmt.Sprintf("d%d.qmp", s.ID))
+	return p
 }
 
 // Plumber connects VM network interfaces to the host (implemented by the network package).
@@ -76,7 +104,7 @@ func ParseExtraArgs(s string) ([]string, error) {
 	for i := 0; i < len(toks); i++ {
 		opt := toks[i]
 		if !extraAllowed[opt] {
-			return nil, fmt.Errorf("параметр QEMU %q не разрешён (допустимы: -device -rtc -smbios -boot -global -vga -cpu -no-acpi -usb -no-hpet -k)", opt)
+			return nil, msgs.New("QEMU parameter «{param}» is not allowed (allowed: -device -rtc -smbios -boot -global -vga -cpu -no-acpi -usb -no-hpet -k)", map[string]string{"param": opt})
 		}
 		out = append(out, opt)
 		if extraNoValue[opt] {
@@ -84,12 +112,12 @@ func ParseExtraArgs(s string) ([]string, error) {
 		}
 		i++
 		if i >= len(toks) || strings.HasPrefix(toks[i], "-") {
-			return nil, fmt.Errorf("у параметра %s нет значения", opt)
+			return nil, msgs.New("QEMU parameter {param} has no value", map[string]string{"param": opt})
 		}
 		low := strings.ToLower(toks[i])
 		for _, bad := range extraDeny {
 			if strings.Contains(low, bad) {
-				return nil, fmt.Errorf("значение %q недопустимо для безопасности", toks[i])
+				return nil, msgs.New("Value «{value}» is not allowed for security reasons", map[string]string{"value": toks[i]})
 			}
 		}
 		out = append(out, toks[i])
@@ -97,16 +125,31 @@ func ParseExtraArgs(s string) ([]string, error) {
 	return out, nil
 }
 
+// displayDevice returns the graphics adapter for the VNC console. The x86 machines have a VGA
+// adapter; the aarch64 "virt" machine has none, so a virtio GPU provides the framebuffer.
+func displayDevice(arch string) []string {
+	if arch == "aarch64" {
+		return []string{"-device", "virtio-gpu-pci"}
+	}
+	return []string{"-vga", "std"}
+}
+
 // ---------- UEFI ----------
 
 type OVMF struct{ Code, Vars, Single string }
 
+// ovmfPairs lists the firmware files of the common distributions: OVMF on x86_64 and AAVMF
+// (edk2 for ARM) on aarch64. Only the files of the host architecture exist, so the first
+// matching pair is the right one.
 var ovmfPairs = [][2]string{
 	{"/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"},
 	{"/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"},
 	{"/usr/share/edk2/ovmf/OVMF_CODE.fd", "/usr/share/edk2/ovmf/OVMF_VARS.fd"},
 	{"/usr/share/edk2-ovmf/x64/OVMF_CODE.fd", "/usr/share/edk2-ovmf/x64/OVMF_VARS.fd"},
 	{"/usr/share/qemu/OVMF_CODE.fd", "/usr/share/qemu/OVMF_VARS.fd"},
+	{"/usr/share/AAVMF/AAVMF_CODE.fd", "/usr/share/AAVMF/AAVMF_VARS.fd"},
+	{"/usr/share/edk2/aarch64/QEMU_CODE.fd", "/usr/share/edk2/aarch64/QEMU_VARS.fd"},
+	{"/usr/share/edk2-armvirt/aarch64/QEMU_CODE.fd", "/usr/share/edk2-armvirt/aarch64/QEMU_VARS.fd"},
 }
 var ovmfSingles = []string{"/usr/share/qemu/OVMF.fd", "/usr/share/ovmf/OVMF.fd", "/usr/share/OVMF/OVMF.fd"}
 
@@ -121,7 +164,7 @@ func FindOVMF() (*OVMF, error) {
 			return &OVMF{Single: p}, nil
 		}
 	}
-	return nil, errors.New("для UEFI нужен пакет OVMF (например: apt install ovmf)")
+	return nil, errors.New("UEFI needs firmware: OVMF (x86_64) or AAVMF (aarch64), see install.sh")
 }
 
 func fileExists(p string) bool {
@@ -148,14 +191,14 @@ func diskArgs(s *Spec) ([]string, error) {
 	switch bus {
 	case "sata":
 		if n > 6 {
-			return nil, errors.New("для SATA поддерживается не более 6 дисков на устройство")
+			return nil, errors.New("No more than 6 disks per device are supported for SATA")
 		}
 		if n > 0 {
 			a = append(a, "-device", "ahci,id=ahci0")
 		}
 	case "ide":
 		if n > 4 {
-			return nil, errors.New("для IDE поддерживается не более 4 дисков; выберите virtio или SATA")
+			return nil, errors.New("No more than 4 disks per device are supported for IDE; choose virtio or SATA")
 		}
 	case "scsi":
 		if n > 0 {
@@ -189,7 +232,7 @@ func cdromArgs(s *Spec) ([]string, error) {
 		return nil, nil
 	}
 	if len(s.CDROMs) > 4 {
-		return nil, errors.New("поддерживается не более 4 CD-ROM на устройство")
+		return nil, errors.New("No more than 4 CD-ROMs per device are supported")
 	}
 	base := 1
 	if len(s.Disks) > 0 {
@@ -235,7 +278,27 @@ func nicSlot(s *Spec, nic int) string {
 }
 
 // BuildArgs builds the qemu-system-* arguments from the device settings.
+// normalizeForArch adapts a device to its architecture. Devices created before the architecture
+// was stored have no Arch: they run on the host. On aarch64 the "virt" machine has no PC chipset
+// (pc, q35), no legacy BIOS and no IDE controller, so the matching virt variants are used.
+func normalizeForArch(s *Spec) {
+	if s.Arch == "" {
+		s.Arch = hostarch.QEMUArch()
+	}
+	if s.Arch != "aarch64" {
+		return
+	}
+	if s.Machine == "" || strings.HasPrefix(s.Machine, "pc") || strings.HasPrefix(s.Machine, "q35") {
+		s.Machine = "virt"
+	}
+	s.BIOS = "uefi"
+	if s.DiskBus == "ide" {
+		s.DiskBus = "sata"
+	}
+}
+
 func BuildArgs(s *Spec, p Paths, vncDisplay, serialPort int, pl Plumber, ov *OVMF) ([]string, error) {
+	normalizeForArch(s)
 	extra, err := ParseExtraArgs(s.ExtraArgs)
 	if err != nil {
 		return nil, err
@@ -278,7 +341,7 @@ func BuildArgs(s *Spec, p Paths, vncDisplay, serialPort int, pl Plumber, ov *OVM
 	for i := 0; i < s.NICs; i++ {
 		nd, err := pl.Netdev(s, i)
 		if err != nil {
-			return nil, fmt.Errorf("сеть интерфейса e%d: %w", i, err)
+			return nil, msgs.Wrap(err, "Network of interface e{nic}: {detail}", map[string]string{"nic": fmt.Sprint(i), "detail": err.Error()})
 		}
 		// id=nic<N> - interface name for QMP set_link (link control without restarting the machine).
 		// On q35 the interface sits on its own pcie-root-port so it can be removed via QMP.
@@ -289,7 +352,6 @@ func BuildArgs(s *Spec, p Paths, vncDisplay, serialPort int, pl Plumber, ov *OVM
 		a = append(a, "-netdev", nd, "-device", dev)
 	}
 	a = append(a,
-		"-vga", "std",
 		"-display", "none",
 		// lossy=on allows Tight-JPEG only if the client itself requested a quality level
 		// (RFB pseudo-encoding). Without a client request QEMU stays lossless.
@@ -297,6 +359,7 @@ func BuildArgs(s *Spec, p Paths, vncDisplay, serialPort int, pl Plumber, ov *OVM
 		"-serial", fmt.Sprintf("tcp:127.0.0.1:%d,server,nowait", serialPort),
 		"-qmp", "unix:"+esc(p.QMP)+",server,nowait",
 	)
+	a = append(a, displayDevice(s.Arch)...)
 	a = append(a, extra...)
 	return a, nil
 }

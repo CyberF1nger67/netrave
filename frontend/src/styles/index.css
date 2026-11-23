@@ -495,5 +495,25 @@
 
 @keyframes term-caret {
   0%, 100% { opacity: 1; }
-  50% { opacity: .55; }
+  50% { opacity: .4; }
+}
+
+/* The terminal keeps a hidden textarea for keyboard input and clipboard events. The base form
+   styles above give every textarea a minimum height, padding, a border and a background, which
+   moves its caret and breaks the mapping between the pointer and the terminal cells. */
+.xterm .xterm-helper-textarea {
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  resize: none;
+}
+
+/* The terminal scrolls its own scrollback; keep that scrollbar thin and matching the panel. */
+.xterm .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, .35) transparent;
 }

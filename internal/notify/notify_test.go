@@ -77,7 +77,7 @@ type listResp struct {
 func TestSendListReadDelete(t *testing.T) {
 	e := newEnv(t)
 	uid, tok, csrf := e.user(t, "alice", "user")
-	e.svc.Send(uid, "bogus-level", "machine", "Заголовок", "тело", "#/lab/1")
+	e.svc.Send(uid, "bogus-level", "machine", "Title", "body", "#/lab/1")
 
 	var lr listResp
 	rec := e.call(t, tok, csrf, http.MethodGet, "/api/notifications", nil)
@@ -86,10 +86,10 @@ func TestSendListReadDelete(t *testing.T) {
 	}
 	json.Unmarshal(rec.Body.Bytes(), &lr)
 	if len(lr.Items) != 1 || lr.Unread != 1 {
-		t.Fatalf("ожидалось 1 уведомление, непрочитанных 1; получено %+v", lr)
+		t.Fatalf("expected 1 notification, 1 unread; got %+v", lr)
 	}
 	if lr.Items[0].Level != Info {
-		t.Errorf("неизвестный уровень должен стать info, получено %q", lr.Items[0].Level)
+		t.Errorf("unknown level must become info, got %q", lr.Items[0].Level)
 	}
 	id := lr.Items[0].ID
 
@@ -98,30 +98,30 @@ func TestSendListReadDelete(t *testing.T) {
 	}
 	json.Unmarshal(e.call(t, tok, csrf, http.MethodGet, "/api/notifications", nil).Body.Bytes(), &lr)
 	if lr.Unread != 0 || !lr.Items[0].Read {
-		t.Fatalf("после пометки ожидалось 0 непрочитанных: %+v", lr)
+		t.Fatalf("after marking, expected 0 unread: %+v", lr)
 	}
 
-	e.svc.Send(uid, Warning, "machine", "Второе", "", "")
+	e.svc.Send(uid, Warning, "machine", "Second", "", "")
 	if rec := e.call(t, tok, csrf, http.MethodPost, "/api/notifications/read-all", nil); rec.Code != 200 {
 		t.Fatalf("read-all: %d", rec.Code)
 	}
 	json.Unmarshal(e.call(t, tok, csrf, http.MethodGet, "/api/notifications?unread=1", nil).Body.Bytes(), &lr)
 	if len(lr.Items) != 0 {
-		t.Fatalf("unread=1 после read-all должен быть пуст: %+v", lr)
+		t.Fatalf("unread=1 after read-all must be empty: %+v", lr)
 	}
 
 	if rec := e.call(t, tok, csrf, http.MethodDelete, "/api/notifications/"+strconv.FormatInt(id, 10), nil); rec.Code != 200 {
 		t.Fatalf("delete: %d", rec.Code)
 	}
 	if rec := e.call(t, tok, csrf, http.MethodDelete, "/api/notifications/"+strconv.FormatInt(id, 10), nil); rec.Code != 404 {
-		t.Fatalf("повторное удаление должно давать 404, получено %d", rec.Code)
+		t.Fatalf("repeated delete must return 404, got %d", rec.Code)
 	}
 	if rec := e.call(t, tok, csrf, http.MethodPost, "/api/notifications/clear-read", nil); rec.Code != 200 {
 		t.Fatalf("clear-read: %d", rec.Code)
 	}
 	json.Unmarshal(e.call(t, tok, csrf, http.MethodGet, "/api/notifications", nil).Body.Bytes(), &lr)
 	if len(lr.Items) != 0 {
-		t.Fatalf("после clear-read прочитанных быть не должно: %+v", lr)
+		t.Fatalf("after clear-read there must be no read items: %+v", lr)
 	}
 }
 
@@ -129,17 +129,17 @@ func TestNotificationsIsolatedBetweenUsers(t *testing.T) {
 	e := newEnv(t)
 	aid, _, _ := e.user(t, "alice", "user")
 	_, btok, bcsrf := e.user(t, "bob", "user")
-	e.svc.Send(aid, Info, "system", "Только для Alice", "", "")
+	e.svc.Send(aid, Info, "system", "Only for Alice", "", "")
 
 	var lr listResp
 	json.Unmarshal(e.call(t, btok, bcsrf, http.MethodGet, "/api/notifications", nil).Body.Bytes(), &lr)
 	if len(lr.Items) != 0 {
-		t.Fatalf("Bob видит чужие уведомления: %+v", lr.Items)
+		t.Fatalf("Bob sees other users' notifications: %+v", lr.Items)
 	}
 	var aidItem int64
 	aidItem = e.svc.Snapshot(aid)[0].ID
 	if rec := e.call(t, btok, bcsrf, http.MethodDelete, "/api/notifications/"+strconv.FormatInt(aidItem, 10), nil); rec.Code != 404 {
-		t.Fatalf("Bob удалил чужое уведомление (код %d)", rec.Code)
+		t.Fatalf("Bob deleted another user's notification (code %d)", rec.Code)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestHistoryIsCapped(t *testing.T) {
 	var n int
 	n = len(e.svc.Snapshot(uid))
 	if n != KeepPerUser {
-		t.Fatalf("история не ограничена: %d записей, ожидалось %d", n, KeepPerUser)
+		t.Fatalf("history is not capped: %d entries, expected %d", n, KeepPerUser)
 	}
 }
 
@@ -174,13 +174,13 @@ func TestAddressing(t *testing.T) {
 	}
 	// Administrator: warning (SendAdmins), broadcast, and a message "except the author" (the author is dave).
 	if count(adminID) != 3 {
-		t.Errorf("администратор: ожидалось 3, получено %d", count(adminID))
+		t.Errorf("admin: expected 3, got %d", count(adminID))
 	}
 	if count(userID) != 1 { // broadcast only, without the excluded author
-		t.Errorf("пользователь: ожидалось 1, получено %d", count(userID))
+		t.Errorf("user: expected 1, got %d", count(userID))
 	}
 	if count(disabledID) != 0 {
-		t.Errorf("отключённый пользователь не должен получать рассылку")
+		t.Errorf("disabled user must not receive the broadcast")
 	}
 
 	// Instance owner: lab, instance and a notification to them.
@@ -193,7 +193,7 @@ func TestAddressing(t *testing.T) {
 	before := count(userID)
 	e.svc.SendInstance(instID, Error, "machine", "x", "", "")
 	if count(userID) != before+1 {
-		t.Errorf("SendInstance не доставил владельцу экземпляра")
+		t.Errorf("SendInstance did not deliver to the instance owner")
 	}
 }
 
@@ -209,24 +209,24 @@ func TestDuplicateUnreadIsNotRepeated(t *testing.T) {
 	e := newEnv(t)
 	uid, _, _ := e.user(t, "erin", "user")
 	for i := 0; i < 3; i++ {
-		e.svc.Send(uid, Warning, "system", "Проверка окружения не пройдена", "qemu: не найден", "#/dashboard")
+		e.svc.Send(uid, Warning, "system", "Environment check failed", "qemu: not found", "#/dashboard")
 	}
 	var n int
 	n = len(e.svc.Snapshot(uid))
 	if n != 1 {
-		t.Fatalf("одинаковое непрочитанное уведомление продублировано: %d", n)
+		t.Fatalf("identical unread notification was duplicated: %d", n)
 	}
 	// After reading, the same notification is created again: it is a new event.
 	e.svc.mem.readAll(uid, time.Now())
-	e.svc.Send(uid, Warning, "system", "Проверка окружения не пройдена", "qemu: не найден", "#/dashboard")
+	e.svc.Send(uid, Warning, "system", "Environment check failed", "qemu: not found", "#/dashboard")
 	n = len(e.svc.Snapshot(uid))
 	if n != 2 {
-		t.Fatalf("после прочтения новое событие должно создаться: %d", n)
+		t.Fatalf("after reading, a new event must be created: %d", n)
 	}
 	// Different text - a separate notification.
-	e.svc.Send(uid, Warning, "system", "Проверка окружения не пройдена", "dnsmasq: не найден", "#/dashboard")
+	e.svc.Send(uid, Warning, "system", "Environment check failed", "dnsmasq: not found", "#/dashboard")
 	n = len(e.svc.Snapshot(uid))
 	if n != 3 {
-		t.Fatalf("разный текст должен давать отдельное уведомление: %d", n)
+		t.Fatalf("different text must produce a separate notification: %d", n)
 	}
 }

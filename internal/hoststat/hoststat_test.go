@@ -16,13 +16,13 @@ func TestParseStat(t *testing.T) {
 		t.Fatal(err)
 	}
 	if total != 1000 || busy != 150 {
-		t.Fatalf("ожидалось busy=150 total=1000, получено busy=%d total=%d", busy, total)
+		t.Fatalf("expected busy=150 total=1000, got busy=%d total=%d", busy, total)
 	}
 }
 
 func TestParseStatWithoutCPULine(t *testing.T) {
 	if _, _, err := ParseStat(strings.NewReader("intr 1\n")); err == nil {
-		t.Fatal("без строки cpu ожидалась ошибка")
+		t.Fatal("missing cpu line should return error")
 	}
 }
 
@@ -30,16 +30,16 @@ func TestParseStatWithoutCPULine(t *testing.T) {
 func TestCPUPercentFromSamples(t *testing.T) {
 	c := New()
 	if _, ok := c.Percent(); ok {
-		t.Fatal("до двух замеров значения быть не должно")
+		t.Fatal("no value expected before two samples")
 	}
 	c.apply(150, 1000)
 	if _, ok := c.Percent(); ok {
-		t.Fatal("после одного замера значения быть не должно")
+		t.Fatal("no value expected after one sample")
 	}
 	// Over the interval 200 ticks were added, 100 of them busy: 50%.
 	c.apply(250, 1200)
 	pct, ok := c.Percent()
 	if !ok || pct != 50 {
-		t.Fatalf("ожидалось 50%%, получено %v (ok=%v)", pct, ok)
+		t.Fatalf("expected 50%%, got %v (ok=%v)", pct, ok)
 	}
 }

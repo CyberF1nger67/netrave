@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useAuthStore } from '../../stores/auth';
 import { useNotificationsStore } from '../../stores/notifications';
 import { NotificationsPanel } from './NotificationsPanel';
+import { MessagePopup } from './MessagePopup';
 
 export function NotificationsLayer() {
   const user = useAuthStore((state) => state.user);
@@ -12,5 +13,10 @@ export function NotificationsLayer() {
     else stop();
     return () => stop();
   }, [user, start, stop]);
-  return <NotificationsPanel />;
+  return (
+    <>
+      <NotificationsPanel />
+      <MessagePopup />
+    </>
+  );
 }

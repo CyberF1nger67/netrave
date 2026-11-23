@@ -4,8 +4,10 @@
 addr: ":8080"                          # HTTP address of the service
 data_dir: /var/lib/netrave             # data root; other paths are derived from it
 db_path: /var/lib/netrave/netrave.db   # SQLite: users, permissions, journal
-labs_dir: /var/lib/netrave/labs        # labs: <id>/lab.yaml
-images_dir: /var/lib/netrave/images    # disk images and ISOs
+labs_dir: /var/lib/netrave/labs        # lab files and folders: <folder>/<name>.yaml
+instances_dir: /var/lib/netrave/instances  # working disks of instance machines
+logs_dir: /var/lib/netrave/logs        # server and machine logs
+disks_dir: /var/lib/netrave/disks     # disk images and ISOs
 icons_dir: /var/lib/netrave/icons      # machine icons
 themes_dir: /var/lib/netrave/themes    # UI themes
 socket_path: /run/netrave/daemon.sock    # daemon IPC socket (created by systemd RuntimeDirectory)

@@ -24,12 +24,12 @@ const admin: User = { id: 1, username: 'root', role: 'admin', disabled: false, c
 const bob: User = { ...admin, id: 2, username: 'bob', role: 'admin', roles: [] };
 
 const ROLES = [
-  { id: -1, name: 'Administrator', description: '', permissions: [], folder_ids: [], member_count: 2, created_at: 0, updated_at: 0, system: true },
-  { id: 5, name: 'Teacher', description: '', permissions: [], folder_ids: [], member_count: 0, created_at: 0, updated_at: 0 },
+  { id: -1, name: 'Administrator', description: '', permissions: [], member_count: 2, created_at: 0, updated_at: 0, system: true },
+  { id: 5, name: 'Teacher', description: '', permissions: [], member_count: 0, created_at: 0, updated_at: 0 },
 ];
 
-describe('смена роли', () => {
-  it('администратору можно назначить другую роль: сначала понижение, затем назначение', async () => {
+describe('role change', () => {
+  it('an administrator can be assigned another role: first demotion, then assignment', async () => {
     api.list.mockResolvedValue([admin, bob]);
     api.addMembers.mockResolvedValue({ ok: true, user_ids: [2] });
     api.update.mockResolvedValue({ ok: true });
@@ -41,7 +41,7 @@ describe('смена роли', () => {
     const row = (await screen.findAllByText('bob'))[0]!.closest('tr')!;
     // Row buttons: "Change role" for every user except oneself.
     const target = [...row.querySelectorAll('button')].find((b) => b.textContent?.includes('Change role'));
-    expect(target, 'кнопка смены роли').toBeTruthy();
+    expect(target, 'role change button').toBeTruthy();
     fireEvent.click(target!);
 
     const select = await screen.findByLabelText('Role', { selector: '#role-dialog-select' });

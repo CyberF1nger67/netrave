@@ -12,5 +12,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./tests/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
+    // Lazy route and page chunks are transformed on first use; a cold run on a slow machine needs
+    // more than vitest's default 5 s per test. The per-test budget must exceed the waitFor budget.
+    testTimeout: 30_000,
   },
 });

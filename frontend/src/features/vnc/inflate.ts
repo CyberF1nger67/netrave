@@ -91,10 +91,10 @@ export class Inflater {
     this.pos = 0;
 
     if (this.needHeader) {
-      if (input.length < 2) throw new Error('Tight: обрезанный zlib-заголовок');
+      if (input.length < 2) throw new Error('Tight: truncated zlib header');
       const cmf = input[0] ?? 0;
       const flg = input[1] ?? 0;
-      if ((cmf & 0x0f) !== 8 || ((cmf << 8) | flg) % 31 !== 0) throw new Error('Tight: неверный zlib-заголовок');
+      if ((cmf & 0x0f) !== 8 || ((cmf << 8) | flg) % 31 !== 0) throw new Error('Tight: invalid zlib header');
       this.pos = 2;
       this.needHeader = false;
     }
@@ -120,7 +120,7 @@ export class Inflater {
           this.alignByte();
           const length = this.readByte() | (this.readByte() << 8);
           const inverse = this.readByte() | (this.readByte() << 8);
-          if ((length ^ 0xffff) !== inverse) throw new Error('Tight: повреждён stored-блок');
+          if ((length ^ 0xffff) !== inverse) throw new Error('Tight: stored block is corrupted');
           this.storedLeft = length;
           this.mode = 'stored';
         } else if (type === 1) {
@@ -130,7 +130,7 @@ export class Inflater {
           this.readDynamic();
           this.mode = 'huff';
         } else {
-          throw new Error('Tight: недопустимый тип deflate-блока');
+          throw new Error('Tight: invalid deflate block type');
         }
       } else if (this.mode === 'stored') {
         if (this.storedLeft === 0) {
@@ -152,15 +152,15 @@ export class Inflater {
           this.mode = this.final ? 'done' : 'header';
         } else {
           const lengthIndex = symbol - 257;
-          if (lengthIndex >= LEN_BASE.length) throw new Error('Tight: неверный length-код');
+          if (lengthIndex >= LEN_BASE.length) throw new Error('Tight: invalid length code');
           const length = (LEN_BASE[lengthIndex] ?? 0) + this.readBits(LEN_EXTRA[lengthIndex] ?? 0);
           const distanceSymbol = this.decode(this.dist!);
-          if (distanceSymbol >= DIST_BASE.length) throw new Error('Tight: неверный distance-код');
+          if (distanceSymbol >= DIST_BASE.length) throw new Error('Tight: invalid distance code');
           this.matchLen = length;
           this.matchDist = (DIST_BASE[distanceSymbol] ?? 0) + this.readBits(DIST_EXTRA[distanceSymbol] ?? 0);
         }
       } else {
-        throw new Error('Tight: zlib-поток завершился раньше времени');
+        throw new Error('Tight: zlib stream ended early');
       }
     }
     return out;
@@ -180,7 +180,7 @@ export class Inflater {
       if (symbol < 16) {
         lengths[index++] = symbol;
       } else if (symbol === 16) {
-        if (index === 0) throw new Error('Tight: повтор без предыдущей длины');
+        if (index === 0) throw new Error('Tight: repeat without a previous length');
         const previous = lengths[index - 1] ?? 0;
         const repeat = 3 + this.readBits(2);
         for (let i = 0; i < repeat && index < lengths.length; i++) lengths[index++] = previous;
@@ -191,7 +191,7 @@ export class Inflater {
         const repeat = 11 + this.readBits(7);
         index += repeat;
       } else {
-        throw new Error('Tight: неверный код длины');
+        throw new Error('Tight: invalid length code');
       }
     }
     this.lit = buildTree(lengths.subarray(0, literalCount));
@@ -210,12 +210,12 @@ export class Inflater {
       first = (first + count) << 1;
       code <<= 1;
     }
-    throw new Error('Tight: неверный Huffman-код');
+    throw new Error('Tight: invalid Huffman code');
   }
 
   private readBit(): number {
     if (this.bitcnt === 0) {
-      if (this.pos >= this.pending.length) throw new Error('Tight: обрезанный zlib-поток');
+      if (this.pos >= this.pending.length) throw new Error('Tight: truncated zlib stream');
       this.bitbuf = this.pending[this.pos++] ?? 0;
       this.bitcnt = 8;
     }
@@ -238,7 +238,7 @@ export class Inflater {
       this.bitcnt -= 8;
       return byte;
     }
-    if (this.pos >= this.pending.length) throw new Error('Tight: обрезанный zlib-поток');
+    if (this.pos >= this.pending.length) throw new Error('Tight: truncated zlib stream');
     return this.pending[this.pos++] ?? 0;
   }
 

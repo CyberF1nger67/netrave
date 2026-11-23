@@ -22,7 +22,7 @@ func TestDropUserRemovesOwnedLabsAndPermissions(t *testing.T) {
 	ownDev := e.device(t, own)
 	e.runInstance(t, own, ownDev, gone.id, "stopped", 0, 0)
 
-	foreign := e.lab(t, admin.id)
+	foreign := e.namedLab(t, admin.id, "foreign")
 	labtest.Perm(t, e.db, foreign, gone.id, "lab.view", true)
 	labtest.Perm(t, e.db, foreign, keep.id, "lab.view", true)
 
@@ -32,21 +32,21 @@ func TestDropUserRemovesOwnedLabsAndPermissions(t *testing.T) {
 	}
 
 	if _, ok := e.db.Labs.Lab(own); ok {
-		t.Fatal("лаборатория удаляемого пользователя осталась")
+		t.Fatal("lab of the deleted user remained")
 	}
 	var n int
 	e.db.QueryRow(`SELECT COUNT(*) FROM lab_instances WHERE lab_id=?`, own).Scan(&n)
 	if n != 0 {
-		t.Fatalf("экземпляры удалённой лаборатории остались: %d", n)
+		t.Fatalf("instances of the deleted lab remained: %d", n)
 	}
 	if _, ok := e.db.Labs.Lab(foreign); !ok {
-		t.Fatal("чужая лаборатория пропала")
+		t.Fatal("another user's lab disappeared")
 	}
 	if _, ok := e.dbValue(t, foreign, gone.id, "lab.view"); ok {
-		t.Fatal("личное право удалённого пользователя в чужой лаборатории осталось")
+		t.Fatal("personal permission of the deleted user in another lab remained")
 	}
 	if _, ok := e.dbValue(t, foreign, keep.id, "lab.view"); !ok {
-		t.Fatal("право другого пользователя пропало")
+		t.Fatal("permission of another user disappeared")
 	}
 }
 
@@ -69,10 +69,10 @@ func TestClearTemplateRefsResetsOnlyThatTemplate(t *testing.T) {
 	if err := clearTemplateRefs(e.db, tplA); err != nil {
 		t.Fatal(err)
 	}
-	if got := devOf(t, e.db, a).TemplateID; got != 0 {
-		t.Fatalf("ссылка на удалённый шаблон осталась: %d", got)
+	if got := devOf(t, e.db, lab, a).TemplateID; got != 0 {
+		t.Fatalf("reference to the deleted template remained: %d", got)
 	}
-	if got := devOf(t, e.db, b).TemplateID; got != tplB {
-		t.Fatalf("ссылка на другой шаблон изменилась: %d", got)
+	if got := devOf(t, e.db, lab, b).TemplateID; got != tplB {
+		t.Fatalf("reference to another template changed: %d", got)
 	}
 }

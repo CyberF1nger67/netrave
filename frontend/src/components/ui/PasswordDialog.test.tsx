@@ -4,7 +4,7 @@ import { PasswordDialog } from './PasswordDialog';
 
 function fill(current: string, next: string, confirm: string) {
   fireEvent.change(screen.getByLabelText('Current password'), { target: { value: current } });
-  fireEvent.change(screen.getByLabelText('New password (8–128 characters)'), { target: { value: next } });
+  fireEvent.change(screen.getByLabelText('New password (8–256 characters)'), { target: { value: next } });
   fireEvent.change(screen.getByLabelText('Confirm Password'), { target: { value: confirm } });
 }
 
@@ -28,11 +28,11 @@ describe('password dialog', () => {
 
   it('keeps the dialog open and shows a backend error', async () => {
     const onClose = vi.fn();
-    const onSubmit = vi.fn().mockRejectedValue(new Error('текущий пароль указан неверно'));
+    const onSubmit = vi.fn().mockRejectedValue(new Error('current password is incorrect'));
     render(<PasswordDialog onClose={onClose} onSubmit={onSubmit} />);
     fill('wrong-secret', 'new-secret-123', 'new-secret-123');
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
-    expect(await screen.findByText('текущий пароль указан неверно')).toBeInTheDocument();
+    expect(await screen.findByText('current password is incorrect')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
 
